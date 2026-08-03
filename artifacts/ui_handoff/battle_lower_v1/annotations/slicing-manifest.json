@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "designSize": { "width": 887, "height": 1774 },
+  "scope": "battle-lower-only",
+  "newSlices": [
+    {
+      "id": "battleFormationOverlay",
+      "path": "slices/battle-formation-overlay-v2.png",
+      "display": { "x": 0, "y": 1090, "w": 887, "h": 684 }
+    },
+    {
+      "id": "healthBarFrame",
+      "path": "slices/healthbar/health-bar-frame.png",
+      "display": { "x": 254, "y": 1519, "w": 378, "h": 28 }
+    },
+    {
+      "id": "healthBarFill",
+      "path": "slices/healthbar/health-bar-fill.png",
+      "display": { "x": 277, "y": 1524, "w": 332, "h": 19 },
+      "fillMode": "left-to-right-crop"
+    }
+  ],
+  "characterSprites": [
+    "characters/trimmed/hero-huangjin.png",
+    "characters/trimmed/hero-hongyi.png",
+    "characters/trimmed/hero-qingyi.png",
+    "characters/trimmed/hero-suwen.png",
+    "characters/trimmed/hero-xuanya.png",
+    "characters/trimmed/protagonist.png"
+  ],
+  "doNotSlice": [
+    "upper scene and HUD",
+    "environment background below the formation; keep the original battlefield",
+    "skill cards below health bar",
+    "skill cost labels",
+    "bottom resource bar and number",
+    "gear button"
+  ],
+  "reservedBlankUiRegion": { "x": 0, "y": 1555, "w": 887, "h": 219 }
+}

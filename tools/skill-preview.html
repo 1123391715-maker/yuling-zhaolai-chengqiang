@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>御灵召来 · 真实战斗技能强化预览</title>
+  <script>
+    if (location.protocol === 'file:') {
+      location.replace('http://127.0.0.1:4173/tools/skill-preview.html');
+    }
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #07111d;
+      --panel: #101a24;
+      --paper: #fff3cf;
+      --muted: #91a59e;
+      --gold: #dba84c;
+      --gold-light: #ffe19a;
+      --jade: #47d8b1;
+      --rare: #58bde9;
+      --legendary: #ff9a4c;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at 32% 16%, rgba(219,168,76,.12), transparent 32%),
+        linear-gradient(180deg, #0a1722, #050b11);
+      color: var(--paper);
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    }
+    body { padding: 18px; }
+    button, select, input { font: inherit; }
+    button, select {
+      border: 1px solid rgba(219,168,76,.5);
+      border-radius: 10px;
+      background: linear-gradient(180deg, #1b2933, #0c151d);
+      color: var(--paper);
+      cursor: pointer;
+    }
+    button:hover, select:hover { border-color: var(--gold-light); }
+    .app {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: minmax(330px, 430px) minmax(390px, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .stage-shell {
+      position: sticky;
+      top: 18px;
+      overflow: hidden;
+      aspect-ratio: 750 / 1334;
+      border: 1px solid rgba(219,168,76,.42);
+      border-radius: 18px;
+      background: #07111d;
+      box-shadow: 0 24px 70px rgba(0,0,0,.48);
+    }
+    iframe {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #07111d;
+    }
+    .panel {
+      min-height: 720px;
+      border: 1px solid rgba(219,168,76,.3);
+      border-radius: 18px;
+      background: rgba(8,15,22,.92);
+      box-shadow: 0 22px 60px rgba(0,0,0,.34);
+      overflow: hidden;
+    }
+    .head {
+      padding: 20px 22px 16px;
+      border-bottom: 1px solid rgba(219,168,76,.2);
+      background: linear-gradient(180deg, rgba(33,45,52,.75), rgba(12,20,28,.5));
+    }
+    h1 { margin: 0 0 7px; font-size: 24px; color: var(--gold-light); letter-spacing: .06em; }
+    .sub { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      padding: 16px 22px;
+      border-bottom: 1px solid rgba(219,168,76,.16);
+    }
+    select { min-height: 42px; padding: 0 12px; font-weight: 800; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .actions button { min-height: 42px; padding: 0 13px; font-weight: 800; }
+    .actions button.primary {
+      color: #24160b;
+      border-color: var(--gold-light);
+      background: linear-gradient(180deg, #ffe39d, #d99a35);
+    }
+    .section-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 15px 22px 10px;
+      font-size: 14px;
+      color: #dacda9;
+    }
+    .section-title small { color: var(--muted); }
+    .upgrade-list {
+      display: grid;
+      gap: 10px;
+      padding: 0 16px 18px;
+    }
+    .upgrade {
+      position: relative;
+      display: grid;
+      grid-template-columns: 28px minmax(0,1fr);
+      gap: 10px;
+      padding: 14px;
+      border: 1px solid rgba(219,168,76,.24);
+      border-radius: 14px;
+      background: rgba(17,28,37,.76);
+      transition: .15s ease;
+    }
+    .upgrade.active {
+      border-color: rgba(255,225,154,.8);
+      background: linear-gradient(135deg, rgba(108,72,27,.36), rgba(18,29,38,.88));
+      box-shadow: 0 0 22px rgba(219,168,76,.1);
+    }
+    .upgrade input {
+      width: 20px;
+      height: 20px;
+      margin: 3px 0 0;
+      accent-color: var(--gold);
+      cursor: pointer;
+    }
+    .upgrade-head {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-width: 0;
+    }
+    .upgrade-name { font-size: 17px; font-weight: 900; color: var(--paper); }
+    .rarity {
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      border: 1px solid currentColor;
+      opacity: .9;
+    }
+    .rarity.common { color: #d9cda9; }
+    .rarity.rare { color: var(--rare); }
+    .rarity.legendary { color: var(--legendary); }
+    .stars { display: flex; gap: 5px; margin-top: 10px; }
+    .star {
+      width: 36px;
+      height: 30px;
+      padding: 0;
+      color: #68746f;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .star.on {
+      color: #2b1909;
+      border-color: #ffe7a9;
+      background: linear-gradient(180deg, #ffe69f, #d99d38);
+      box-shadow: 0 0 12px rgba(255,198,83,.18);
+    }
+    .desc {
+      min-height: 40px;
+      margin-top: 9px;
+      color: #adc0b8;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .status {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 13px 22px 16px;
+      border-top: 1px solid rgba(219,168,76,.16);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    #loadState { color: var(--jade); font-weight: 900; }
+    #summary { color: #f0d695; text-align: right; }
+    .empty {
+      padding: 28px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed rgba(219,168,76,.24);
+      border-radius: 14px;
+    }
+    @media (max-width: 840px) {
+      body { padding: 10px; }
+      .app { grid-template-columns: 1fr; }
+      .stage-shell { position: relative; top: 0; width: min(430px, 100%); margin: 0 auto; }
+      .toolbar { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="stage-shell">
+      <iframe id="battleFrame" src="../index.html?skill-preview=1" title="真实战斗画面"></iframe>
+    </section>
+
+    <section class="panel">
+      <header class="head">
+        <h1>技能强化组合预览</h1>
+        <p class="sub">直接运行游戏战斗。这里仅控制强化选择，不复制攻击、技能或特效逻辑。</p>
+      </header>
+
+      <div class="toolbar">
+        <select id="heroSelect" aria-label="选择预览角色">
+          <option value="huangjin">黄巾 · 镇岳震波</option>
+          <option value="hongyi">红衣</option>
+          <option value="qingyi">青衣</option>
+          <option value="suwen">素问</option>
+          <option value="xuanya">玄鸦</option>
+        </select>
+        <div class="actions">
+          <button id="restartBtn" class="primary" type="button">重新演示</button>
+          <button id="clearBtn" type="button">清空强化</button>
+          <button id="speedBtn" type="button">速度 ×1</button>
+        </div>
+      </div>
+
+      <div class="section-title">
+        <span>强化类型（可复选）</span>
+        <small>每项独立选择星级</small>
+      </div>
+      <div id="upgradeList" class="upgrade-list"></div>
+
+      <footer class="status">
+        <span id="loadState">等待游戏载入…</span>
+        <span id="summary">未选择强化</span>
+      </footer>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var frame = document.getElementById('battleFrame');
+      var heroSelect = document.getElementById('heroSelect');
+      var upgradeList = document.getElementById('upgradeList');
+      var loadState = document.getElementById('loadState');
+      var summary = document.getElementById('summary');
+      var restartBtn = document.getElementById('restartBtn');
+      var clearBtn = document.getElementById('clearBtn');
+      var speedBtn = document.getElementById('speedBtn');
+      var selectedLevels = {};
+      var game = null;
+      var previewSpeed = 1;
+      var lifeGuard = 0;
+
+      heroSelect.addEventListener('change', function () {
+        renderUpgrades();
+        restartBattle();
+      });
+      restartBtn.addEventListener('click', restartBattle);
+      clearBtn.addEventListener('click', function () {
+        var upgrades = currentUpgrades();
+        for (var i = 0; i < upgrades.length; i++) delete selectedLevels[upgrades[i].id];
+        renderUpgrades();
+        applySelection(true);
+      });
+      speedBtn.addEventListener('click', function () {
+        previewSpeed = previewSpeed >= 3 ? 1 : previewSpeed + 1;
+        speedBtn.textContent = '速度 ×' + previewSpeed;
+        if (game) game.speed = previewSpeed;
+      });
+      frame.addEventListener('load', connectGame);
+      connectGame();
+
+      function battleWindow() {
+        try { return frame.contentWindow; } catch (err) { return null; }
+      }
+
+      function connectGame() {
+        var win = battleWindow();
+        if (!win || !win.__YL_GAME__) {
+          loadState.textContent = '等待真实战斗实例…';
+          setTimeout(connectGame, 120);
+          return;
+        }
+        game = win.__YL_GAME__;
+        if (game.state === 'loading') {
+          loadState.textContent = '加载战斗资源…';
+          setTimeout(connectGame, 120);
+          return;
+        }
+        game.externalSkillPreview = true;
+        game.huangjinPreviewMode = 'base';
+        loadState.textContent = '已连接真实战斗';
+        renderUpgrades();
+        restartBattle();
+        clearInterval(lifeGuard);
+        lifeGuard = setInterval(keepPreviewRunning, 120);
+      }
+
+      function allUpgrades() {
+        var win = battleWindow();
+        return win && win.YL && Array.isArray(win.YL.ROGUE_UPGRADES) ? win.YL.ROGUE_UPGRADES : [];
+      }
+
+      function currentUpgrades() {
+        var hero = heroSelect.value;
+        return allUpgrades().filter(function (upgrade) {
+          return upgrade && !upgrade.disabled && upgrade.type === 'exclusive' && upgrade.hero === hero;
+        });
+      }
+
+      function renderUpgrades() {
+        var upgrades = currentUpgrades();
+        upgradeList.innerHTML = '';
+        if (!upgrades.length) {
+          upgradeList.innerHTML = '<div class="empty">该角色当前没有已接入的专属强化。</div>';
+          updateSummary();
+          return;
+        }
+        for (var i = 0; i < upgrades.length; i++) upgradeList.appendChild(createUpgradeCard(upgrades[i]));
+        updateSummary();
+      }
+
+      function createUpgradeCard(upgrade) {
+        var level = selectedLevels[upgrade.id] || 0;
+        var card = document.createElement('label');
+        card.className = 'upgrade' + (level ? ' active' : '');
+        card.dataset.id = upgrade.id;
+
+        var checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = level > 0;
+        checkbox.addEventListener('change', function () {
+          if (checkbox.checked) selectedLevels[upgrade.id] = selectedLevels[upgrade.id] || 1;
+          else delete selectedLevels[upgrade.id];
+          renderUpgrades();
+          applySelection(true);
+        });
+
+        var body = document.createElement('div');
+        var head = document.createElement('div');
+        head.className = 'upgrade-head';
+        head.innerHTML =
+          '<span class="upgrade-name">' + escapeHtml(upgrade.name) + '</span>' +
+          '<span class="rarity ' + upgrade.rarity + '">' + rarityName(upgrade.rarity) + '</span>';
+        body.appendChild(head);
+
+        var stars = document.createElement('div');
+        stars.className = 'stars';
+        var max = Math.max(1, upgrade.maxLevel || (upgrade.levels && upgrade.levels.length) || 1);
+        for (var star = 1; star <= max; star++) {
+          (function (starLevel) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'star' + (level >= starLevel ? ' on' : '');
+            button.textContent = '★';
+            button.title = starLevel + ' 星';
+            button.addEventListener('click', function (event) {
+              event.preventDefault();
+              event.stopPropagation();
+              selectedLevels[upgrade.id] = starLevel;
+              renderUpgrades();
+              applySelection(true);
+            });
+            stars.appendChild(button);
+          }(star));
+        }
+        body.appendChild(stars);
+
+        var desc = document.createElement('div');
+        desc.className = 'desc';
+        var descLevel = Math.max(1, level || 1);
+        desc.textContent = upgrade.levels && upgrade.levels[descLevel - 1]
+          ? upgrade.levels[descLevel - 1]
+          : '当前强化暂无描述';
+        body.appendChild(desc);
+
+        card.appendChild(checkbox);
+        card.appendChild(body);
+        return card;
+      }
+
+      function applySelection(triggerAttack) {
+        if (!game) return;
+        var upgrades = allUpgrades();
+        game.rogueLevels = game.rogueLevels || {};
+        game.upgradeAcquireOrder = game.upgradeAcquireOrder || [];
+        for (var i = 0; i < upgrades.length; i++) {
+          if (upgrades[i] && upgrades[i].type === 'exclusive') delete game.rogueLevels[upgrades[i].id];
+        }
+        var order = [];
+        Object.keys(selectedLevels).forEach(function (id) {
+          var level = selectedLevels[id] | 0;
+          if (level > 0) {
+            game.rogueLevels[id] = level;
+            order.push(id);
+          }
+        });
+        game.upgradeAcquireOrder = order;
+        game.upgradeCount = order.length;
+        game.huangjinPreviewMode = 'base';
+        game.externalSkillPreview = true;
+        if (typeof game.refreshUpgradeDerivedStats === 'function') game.refreshUpgradeDerivedStats(false);
+        if (triggerAttack && game.heroes && game.heroes.length) {
+          var hero = game.heroes[0];
+          hero.attackCd = 0;
+          hero.attackWindup = 0;
+          hero.pendingTarget = null;
+          if (game.rogueLevels.E11) hero.attackCount = game.rogueLevels.E11 >= 2 ? 2 : 3;
+        }
+        updateSummary();
+      }
+
+      function restartBattle() {
+        if (!game || typeof game.beginBattle !== 'function') return;
+        var hero = heroSelect.value;
+        game.externalSkillPreview = true;
+        game.huangjinPreviewMode = 'base';
+        game.beginBattle([{ type: hero, gridIndex: 2 }]);
+        game.speed = previewSpeed;
+        applySelection(true);
+        loadState.textContent = '真实战斗运行中';
+      }
+
+      function keepPreviewRunning() {
+        if (!game) return;
+        game.externalSkillPreview = true;
+        if (game.state === 'result') {
+          restartBattle();
+          return;
+        }
+        if (game.state !== 'battle') return;
+        game.baseHp = game.baseMax;
+        if (game.phase === 'cards') {
+          game.pendingCards = [];
+          game.pendingLevels = 0;
+          game.phase = 'wave';
+        }
+      }
+
+      function updateSummary() {
+        var active = [];
+        var upgrades = currentUpgrades();
+        for (var i = 0; i < upgrades.length; i++) {
+          var level = selectedLevels[upgrades[i].id] || 0;
+          if (level) active.push(upgrades[i].name + ' ' + level + '★');
+        }
+        summary.textContent = active.length ? active.join(' + ') : '未选择强化';
+      }
+
+      function rarityName(rarity) {
+        return rarity === 'legendary' ? '传说' : rarity === 'rare' ? '稀有' : '普通';
+      }
+
+      function escapeHtml(value) {
+        return String(value == null ? '' : value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+    }());
+  </script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+{
+  "appid": "touristappid",
+  "compileType": "game",
+  "libVersion": "3.6.2",
+  "projectname": "御灵召来",
+  "description": "中式志怪五御灵自动防守 Roguelite 战斗 Demo",
+  "packOptions": {
+    "ignore": [
+      {
+        "type": "glob",
+        "value": "assets/art/*.png"
+      },
+      {
+        "type": "glob",
+        "value": "assets/art/sprites/*.png"
+      }
+    ]
+  },
+  "setting": {
+    "es6": true,
+    "minified": false,
+    "postcss": false,
+    "urlCheck": false,
+    "coverView": true,
+    "enhance": true,
+    "useStaticServer": true,
+    "useCompilerPlugins": false
+  },
+  "condition": {}
+}
