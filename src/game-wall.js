@@ -571,7 +571,7 @@
       this.dpr = Math.min(2, info.pixelRatio || 1);
     } else {
       this.screenW = root.innerWidth || W; this.screenH = root.innerHeight || H;
-      this.dpr = Math.min(2, root.devicePixelRatio || 1);
+      this.dpr = 1;
     }
     this.canvas.width = Math.floor(W * this.dpr);
     this.canvas.height = Math.floor(H * this.dpr);
@@ -599,7 +599,8 @@
       img.src = YL.ASSETS[key];
       self.assets[key] = img;
     });
-    setTimeout(function () { if (self.state === 'loading') self.state = 'title'; }, 4500);
+    this._loadingStartedAt = Date.now();
+    setTimeout(function () { if (self.state === 'loading') self.state = 'title'; }, 25000);
   };
 
   Game.prototype.mapPoint = function (p) {
