@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <title>御灵召来 · 城墙战斗 Demo</title>
   <style>
+    @font-face{font-family:"MaShanZheng";src:url("./assets/fonts/MaShanZheng-Regular.ttf") format("truetype");font-style:normal;font-weight:400 900;font-display:block}
+    @font-face{font-family:"NotoSerifSCGame";src:url("./assets/fonts/NotoSerifSC-GameSubset.ttf") format("truetype");font-style:normal;font-weight:400 900;font-display:block}
     *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#07111d}
     body{display:grid;place-items:center;touch-action:none;user-select:none;-webkit-user-select:none}
     canvas{display:block;width:100vw;height:100vh;object-fit:contain;background:#07111d}
@@ -14,22 +16,55 @@
 </head>
 <body>
   <canvas id="game" aria-label="御灵召来游戏画面"></canvas>
-  <script src="./src/config.js?v=20260731-sfx-v1"></script>
+  <script src="./config/ui-layout.js?v=20260820-ui-coordinate-contract-v1"></script>
+  <script src="./src/config.js?v=20260820-ui-coordinate-contract-v1"></script>
   <script src="./config/waves.js?v=20260731-demo-pass-curve-v1"></script>
+  <script src="./config/stages.js?v=20260824-formation-speed-stage13-v1"></script>
   <script src="./config/heroes.js?v=20260730-3hero-10waves-v1"></script>
-  <script src="./config/battle-tuning.js?v=20260731-demo-pass-curve-v1"></script>
+  <script src="./config/battle-tuning.js?v=20260824-nuba-visual-scale-v1"></script>
   <script src="./config/skill-tuning.js?v=20260730-xuanya-collider-v1"></script>
-  <script src="./config/upgrades.js?v=20260730-protagonist-skills-v1"></script>
+  <script src="./config/upgrades.js?v=20260807-spirit-line-v2-ultimate-v1"></script>
   <script src="./src/audio.js?v=20260731-sfx-v1"></script>
-  <script src="./src/art.js?v=20260731-hit-feedback-v1"></script>
-  <script src="./src/game-wall.js?v=20260731-sfx-v1"></script>
+  <script src="./src/art.js?v=20260813-noto-serif-sc-body-v1"></script>
+  <script src="./src/progression.js?v=20260824-speed-preference-v1"></script>
+  <script src="./src/home-ui.js?v=20260824-nuba-visual-scale-v1"></script>
+  <script src="./src/tutorial-ui.js?v=20260824-formation-speed-stage13-v1"></script>
+  <script src="./src/game-wall.js?v=20260824-formation-speed-stage13-v1"></script>
   <script>
-    (function () {
-      var canvas = document.getElementById('game');
-      var game = new YL.Game(canvas, { platform: 'web' });
-      game.start();
-      window.__YL_GAME__ = game;
-    }());
+    // 全局错误捕获，显示在页面上
+    function showError(title, detail) {
+      var msg = document.createElement('pre');
+      msg.style.cssText = 'position:fixed;top:0;left:0;right:0;color:#ff5252;font-size:13px;z-index:99999;background:#111;padding:12px;white-space:pre-wrap;word-break:break-all;margin:0;font-family:monospace';
+      msg.textContent = title + ': ' + detail;
+      document.body.appendChild(msg);
+      console.error(title, detail);
+    }
+    window.addEventListener('error', function(e) {
+      showError('JS Error', (e.error && e.error.stack) || e.message || 'unknown');
+    });
+    function startGame() {
+      try {
+        var canvas = document.getElementById('game');
+        if (!canvas) throw new Error('canvas not found');
+        if (!window.innerWidth || !window.innerHeight) {
+          var s = document.documentElement.style;
+          s.width = '750px'; s.height = '1334px';
+        }
+        if (typeof YL === 'undefined') throw new Error('YL namespace not defined (config.js failed to load?)');
+        if (typeof YL.Game !== 'function') throw new Error('YL.Game is not a function (game-wall.js failed?)');
+        var game = new YL.Game(canvas, { platform: 'web' });
+        game.start();
+        window.__YL_GAME__ = game;
+      } catch (e) {
+        showError('Init Error', (e && e.stack) || (e && e.message) || 'unknown');
+      }
+    }
+    // Canvas 不会在字体到达后自动重绘已绘制的首帧，因此 Web 端先等待标题与正文字体就绪再启动。
+    var fontReady = document.fonts && document.fonts.load ? Promise.all([
+      document.fonts.load('22px "MaShanZheng"'),
+      document.fonts.load('16px "NotoSerifSCGame"')
+    ]) : Promise.resolve();
+    fontReady.catch(function (e) { console.warn('Custom font failed to load; using fallback font.', e); }).then(startGame);
   </script>
 </body>
 </html>

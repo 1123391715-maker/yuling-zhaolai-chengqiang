@@ -49,6 +49,14 @@
       range: 850,
       windup: 0.28,
       projectileSpeed: 520
+    },
+    nuba: {
+      type: 'ranged',
+      interval: 1.18,
+      multiplier: 1,
+      range: 900,
+      windup: 0.30,
+      projectileSpeed: 0
     }
   };
 }(typeof globalThis !== 'undefined' ? globalThis : this));

@@ -254,6 +254,48 @@
         effectLife: 1.05,
         shake: 5
       }
+    },
+
+    nuba: {
+      attack: {
+        damageAtk: 0.92,
+        fieldRadius: 112,
+        upgradedFieldRadius: 130,
+        fieldDuration: 2.60,
+        fallDelay: 0.38,
+        pillarDamageAtk: 0.78,
+        fieldTickDamageAtk: 0.24,
+        fieldTickInterval: 0.82,
+        resonanceLineDamageAtk: 0.72,
+        resonanceWidth: 28,
+        resonanceBurstDamageAtk: 0.46,
+        castAnimDuration: 0.34,
+        sigilColor: '#d7c38a',
+        shadowColor: '#151225'
+      },
+      passive: {
+        maxActiveSigils: 1,
+        resonanceDuration: 0.48,
+        resonanceBurstRadius: 104,
+        starResonanceWidth: 36
+      },
+      ultimate: {
+        cooldown: 19,
+        castDuration: 0.92,
+        radius: 226,
+        centerDamageAtk: 1.80,
+        pillarCount: 5,
+        pillarDamageAtk: 0.55,
+        pillarRadius: 74,
+        pillarDelay: 0.16,
+        pillarSpacing: 0.16,
+        fieldDuration: 4.0,
+        fieldRadius: 264,
+        laneRadius: 390,
+        fieldTickInterval: 0.80,
+        fieldTickDamageAtk: 0.42,
+        shake: 10
+      }
     }
   };
 }(typeof globalThis !== 'undefined' ? globalThis : this));

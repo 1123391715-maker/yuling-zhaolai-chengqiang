@@ -80,78 +80,78 @@
     },
 
     {
-      id: 'F01', type: 'faction', faction: '人族', rarity: 'common', name: '人族·列阵', maxLevel: 3,
+      id: 'F01', type: 'faction', faction: '人族', rarity: 'common', name: '红尘·列阵', maxLevel: 3,
       levels: [
-        '人族 DEF +20%',
-        '人族 DEF +35%',
-        '人族 DEF +45%，第一名人族阻挡数 +1'
+        '红尘 DEF +20%',
+        '红尘 DEF +35%',
+        '红尘 DEF +45%，第一名红尘阻挡数 +1'
       ]
     },
     {
-      id: 'F02', type: 'faction', faction: '人族', rarity: 'rare', name: '人族·军势', maxLevel: 3, p0: true,
+      id: 'F02', type: 'faction', faction: '人族', rarity: 'rare', name: '红尘·军势', maxLevel: 3, p0: true,
       levels: [
-        '被人族阻挡的敌人受到全队伤害 +12%',
-        '被人族阻挡的敌人受到全队伤害 +20%',
-        '被人族阻挡的敌人受到全队伤害 +28%；死亡时为同列友方提供护盾'
+        '被红尘阻挡的敌人受到全队伤害 +12%',
+        '被红尘阻挡的敌人受到全队伤害 +20%',
+        '被红尘阻挡的敌人受到全队伤害 +28%；死亡时为同列友方提供护盾'
       ]
     },
     {
-      id: 'F03', type: 'faction', faction: '修士', rarity: 'common', name: '修士·符脉', maxLevel: 3,
+      id: 'F03', type: 'faction', faction: '修士', rarity: 'common', name: '九霄·符脉', maxLevel: 3,
       levels: [
-        '修士大招 CD -8%',
-        '修士大招 CD -14%',
-        '修士大招 CD -20%，修士释放大招后恢复少量灵气进度'
+        '九霄大招 CD -8%',
+        '九霄大招 CD -14%',
+        '九霄大招 CD -20%，九霄释放大招后恢复少量灵气进度'
       ]
     },
     {
-      id: 'F04', type: 'faction', faction: '修士', rarity: 'rare', name: '修士·法阵共鸣', maxLevel: 2,
+      id: 'F04', type: 'faction', faction: '修士', rarity: 'rare', name: '九霄·法阵共鸣', maxLevel: 2,
       levels: [
-        '修士释放大招时，为最低血量队友提供 80% 修士 ATK 的护盾',
-        '修士释放大招时，为最低血量队友提供 140% 修士 ATK 的护盾'
+        '九霄释放大招时，为最低血量队友提供 80% 九霄 ATK 的护盾',
+        '九霄释放大招时，为最低血量队友提供 140% 九霄 ATK 的护盾'
       ]
     },
     {
-      id: 'F05', type: 'faction', faction: '妖族', rarity: 'common', name: '妖族·迅影', maxLevel: 3,
+      id: 'F05', type: 'faction', faction: '妖族', rarity: 'common', name: '万妖·迅影', maxLevel: 3,
       levels: [
-        '妖族攻速 +12%',
-        '妖族攻速 +22%',
-        '妖族攻速 +32%，击杀后额外攻速 +15%，持续 3s'
+        '万妖攻速 +12%',
+        '万妖攻速 +22%',
+        '万妖攻速 +32%，击杀后额外攻速 +15%，持续 3s'
       ]
     },
     {
-      id: 'F06', type: 'faction', faction: '妖族', rarity: 'rare', name: '妖族·野性连击', maxLevel: 3, p0: true,
+      id: 'F06', type: 'faction', faction: '妖族', rarity: 'rare', name: '万妖·野性连击', maxLevel: 3, p0: true,
       levels: [
-        '妖族每第 3 次普攻追加 40% ATK 伤害',
-        '妖族每第 3 次普攻追加 65% ATK 伤害',
-        '妖族每第 3 次普攻追加 90% ATK 小范围横斩'
+        '万妖每第 3 次普攻追加 40% ATK 伤害',
+        '万妖每第 3 次普攻追加 65% ATK 伤害',
+        '万妖每第 3 次普攻追加 90% ATK 小范围横斩'
       ]
     },
     {
-      id: 'F07', type: 'faction', faction: '鬼族', rarity: 'common', name: '鬼族·阴火', maxLevel: 3,
+      id: 'F07', type: 'faction', faction: '鬼族', rarity: 'common', name: '黄泉·阴火', maxLevel: 3,
       levels: [
-        '鬼族造成的持续伤害 +25%',
-        '鬼族造成的持续伤害 +45%',
-        '鬼族造成的持续伤害 +60%，持续伤害每跳有概率额外跳一次'
+        '黄泉造成的持续伤害 +25%',
+        '黄泉造成的持续伤害 +45%',
+        '黄泉造成的持续伤害 +60%，持续伤害每跳有概率额外跳一次'
       ]
     },
     {
-      id: 'F08', type: 'faction', faction: '鬼族', rarity: 'rare', name: '鬼族·魂爆', maxLevel: 2, p0: true,
+      id: 'F08', type: 'faction', faction: '鬼族', rarity: 'rare', name: '黄泉·魂爆', maxLevel: 2, p0: true,
       levels: [
-        '灼烧敌人死亡时造成 45% 红衣 ATK 小范围爆炸；魂爆不能连锁触发',
+        '黄泉灼烧敌人死亡时造成 45% 红衣 ATK 小范围爆炸；魂爆不能连锁触发',
         '魂爆提升至 80% 红衣 ATK，范围扩大并留下 1s 余火'
       ]
     },
     {
-      id: 'F09', type: 'faction', faction: '神', rarity: 'rare', name: '神·神谕', maxLevel: 3,
+      id: 'F09', type: 'faction', faction: '神', rarity: 'rare', name: '九霄·神谕', maxLevel: 3,
       levels: [
-        '神阵营技能伤害 +18%',
-        '神阵营技能伤害 +30%',
-        '神阵营技能伤害 +42%，神阵营释放大招时净化全队'
+        '九霄阵营技能伤害 +18%',
+        '九霄阵营技能伤害 +30%',
+        '九霄阵营技能伤害 +42%，九霄阵营释放大招时净化全队'
       ]
     },
     {
-      id: 'F10', type: 'faction', faction: '魔', rarity: 'legendary', name: '魔·献祭', maxLevel: 1, disabled: true,
-      levels: ['魔阵营伤害 +35%、技能伤害 +15%，但受到治疗 -20%。当前版本暂不进入刷新池']
+      id: 'F10', type: 'faction', faction: '魔', rarity: 'legendary', name: '混沌·献祭', maxLevel: 1, disabled: true,
+      levels: ['混沌阵营伤害 +35%、技能伤害 +15%，但受到治疗 -20%。当前版本暂不进入刷新池']
     },
 
     {
@@ -321,6 +321,122 @@
     {
       id: 'E10', type: 'exclusive', hero: 'suwen', rarity: 'legendary', name: '天命星陨', maxLevel: 1, ultimateUnlock: true,
       levels: ['解锁素问大招天命星陨：围绕最高星蚀 / 精英 / Boss 目标落下多枚星针']
+    },
+    {
+      id: 'N01', type: 'exclusive', hero: 'nuba', rarity: 'common', name: '裂日落仪', maxLevel: 3, p0: true,
+      levels: [
+        '玄旱落仪落柱伤害 +20%。',
+        '裂日天仪展开内外双环；外环追加一道较弱的旱柱。',
+        '落仪展开为旱天门，落点两侧各补一道短旱柱。'
+      ]
+    },
+    {
+      id: 'N02', type: 'exclusive', hero: 'nuba', rarity: 'rare', name: '天仪共鸣', maxLevel: 3, p0: true,
+      levels: [
+        '已有裂日天仪时，下一次普攻触发共鸣连线，连线伤害 +25%。',
+        '共鸣连线向两侧分出短支线，形成三点共鸣结构。',
+        '连线终点闭合为覆日天门，延迟爆裂并留下短暂蚀日区域。'
+      ]
+    },
+    {
+      id: 'N03', type: 'exclusive', hero: 'nuba', rarity: 'legendary', name: '赤地无疆', maxLevel: 1, ultimateUnlock: true,
+      levels: ['解锁女魃大招赤地无疆：无需预置法阵即可对密集敌群造成蚀日坠击与多重旱柱，并留下持续旱天幕。']
+    },
+    {
+      id: 'N04', type: 'exclusive', hero: 'nuba', rarity: 'legendary', name: '覆日天门', maxLevel: 3, ultimateEnhancement: true,
+      levels: [
+        '赤地无疆冷却时间 -15%。',
+        '蚀日天幕向密集敌群移动，并自动生成 3 座裂日天仪。',
+        '赤地无疆展开为全线旱天幕；已有天仪转为覆日天门，没有预置天仪也会自动生成完整天门。'
+      ]
+    },
+
+    // 1-2「御灵守备」V2 试验关专属牌池。
+    // 它与上方旧城墙站桩技能完全隔离：只在 battleMode = spirit-line-v2 时可抽取。
+    // 蓝色 = 普攻形态，黄色 = 默认连携形态，红色 = 大招解锁 / 解锁后的大招形态强化。
+    {
+      id: 'V2H01', type: 'exclusive', hero: 'huangjin', rarity: 'common', spiritLineV2: true, name: '碎岩重击', maxLevel: 3,
+      levels: [
+        '生效角色：黄巾\n生效技能：撼地（普攻）\n撼地伤害 +25%。',
+        '生效角色：黄巾\n生效技能：撼地（普攻）\n命中后 0.5 秒追加 50% ATK 余震。',
+        '生效角色：黄巾\n生效技能：撼地（普攻）\n余震左右各分出一枚碎岩，各造成 35% ATK。'
+      ]
+    },
+    {
+      id: 'V2H02', type: 'exclusive', hero: 'huangjin', rarity: 'rare', spiritLineV2: true, name: '甲震', maxLevel: 3,
+      levels: [
+        '生效角色：黄巾\n生效技能：镇甲（连携）\n持有护盾时，撼地伤害 +25%。',
+        '生效角色：黄巾\n生效技能：镇甲（连携）\n护盾生成或刷新时，对 70px 内敌人造成 35% ATK。',
+        '生效角色：黄巾\n生效技能：镇甲（连携）\n护盾结束或破碎时爆开 90px 震波，造成 45% ATK。'
+      ]
+    },
+    {
+      id: 'V2X01', type: 'exclusive', hero: 'xuanya', rarity: 'common', spiritLineV2: true, name: '断魄加深', maxLevel: 3,
+      levels: [
+        '生效角色：玄鸦\n生效技能：断魄横斩（普攻）\n横斩伤害 +20%。',
+        '生效角色：玄鸦\n生效技能：断魄横斩（普攻）\n横斩角度由 120° 扩大至 165°。',
+        '生效角色：玄鸦\n生效技能：断魄横斩（普攻）\n一次命中 3 名及以上敌人时，向前追加 80% ATK 月牙斩。'
+      ]
+    },
+    {
+      id: 'V2X02', type: 'exclusive', hero: 'xuanya', rarity: 'rare', spiritLineV2: true, name: '血阵留痕', maxLevel: 3,
+      levels: [
+        '生效角色：玄鸦\n生效技能：饮血残阵（连携）\n断魄横斩击杀敌人后，原地留下 1.5 秒血阵，每秒造成 30% ATK。',
+        '生效角色：玄鸦\n生效技能：饮血残阵（连携）\n血阵范围 +20%，阵内敌人减速由 20% 提高至 35%。',
+        '生效角色：玄鸦\n生效技能：饮血残阵（连携）\n敌人在血阵内死亡时爆开，造成 60% ATK；该爆炸不再生成血阵。'
+      ]
+    },
+    {
+      id: 'V2R01', type: 'exclusive', hero: 'hongyi', rarity: 'common', spiritLineV2: true, name: '四羽齐射', maxLevel: 3,
+      levels: [
+        '生效角色：红衣\n生效技能：火羽连珠（普攻）\n每轮火羽由 3 枚增加至 4 枚。',
+        '生效角色：红衣\n生效技能：火羽连珠（普攻）\n每枚火羽独立寻找敌人，不再固定追随同一目标。',
+        '生效角色：红衣\n生效技能：火羽连珠（普攻）\n最后一枚火羽命中时，额外造成 55px、35% ATK 小爆燃。'
+      ]
+    },
+    {
+      id: 'V2R02', type: 'exclusive', hero: 'hongyi', rarity: 'rare', spiritLineV2: true, name: '三转贯日', maxLevel: 3,
+      levels: [
+        '生效角色：红衣\n生效技能：贯日符（连携）\n贯日符触发所需火羽轮次由 4 次降至 3 次。',
+        '生效角色：红衣\n生效技能：贯日符（连携）\n贯日符每命中一名敌人，左右各射出一枚 35% ATK 侧羽。',
+        '生效角色：红衣\n生效技能：贯日符（连携）\n贯日符到达终点或命中精英 / Boss 时爆开，造成 90px、60% ATK 伤害。'
+      ]
+    },
+    {
+      id: 'V2H03', type: 'exclusive', hero: 'huangjin', rarity: 'legendary', spiritLineV2: true, spiritLineV2Ultimate: true, ultimateUnlock: true, name: '岳镇八荒', maxLevel: 1,
+      levels: ['生效角色：黄巾\n解锁技能：岳镇八荒（大招）\n每 40 秒自动施放：对附近精英 / Boss 或 3 名敌人落下山印，造成 150% ATK、眩晕 1.2 秒，并获得 150% ATK 护盾。']
+    },
+    {
+      id: 'V2X03', type: 'exclusive', hero: 'xuanya', rarity: 'legendary', spiritLineV2: true, spiritLineV2Ultimate: true, ultimateUnlock: true, name: '百鬼夜行', maxLevel: 1,
+      levels: ['生效角色：玄鸦\n解锁技能：百鬼夜行（大招）\n每 35 秒自动施放：锁定附近精英 / Boss 或 3 名敌人，在 1.5 秒内斩出 5 刃，每刃造成 60% ATK。']
+    },
+    {
+      id: 'V2R03', type: 'exclusive', hero: 'hongyi', rarity: 'legendary', spiritLineV2: true, spiritLineV2Ultimate: true, ultimateUnlock: true, name: '焚天火雨', maxLevel: 1,
+      levels: ['生效角色：红衣\n解锁技能：焚天火雨（大招）\n每 40 秒自动施放：对最密集敌群降下 8 枚火羽陨星，每枚造成 50% ATK 范围伤害。']
+    },
+    {
+      id: 'V2H04', type: 'exclusive', hero: 'huangjin', rarity: 'legendary', spiritLineV2: true, spiritLineV2Ultimate: true, ultimateEnhancement: true, name: '镇魂破阵', maxLevel: 3,
+      levels: [
+        '生效角色：黄巾\n生效技能：岳镇八荒（大招）\n被眩晕的敌人在眩晕期间承受伤害 +15%。',
+        '生效角色：黄巾\n生效技能：岳镇八荒（大招）\n眩晕结束后，在原范围追加一次 70% ATK 余震。',
+        '生效角色：黄巾\n生效技能：岳镇八荒（大招）\n余震命中精英 / Boss 时，脚下追加一道 90% ATK 封煞石印。'
+      ]
+    },
+    {
+      id: 'V2X04', type: 'exclusive', hero: 'xuanya', rarity: 'legendary', spiritLineV2: true, spiritLineV2Ultimate: true, ultimateEnhancement: true, name: '夜行裂魂', maxLevel: 3,
+      levels: [
+        '生效角色：玄鸦\n生效技能：百鬼夜行（大招）\n鬼刃段数由 5 段增加至 7 段，仍在 1.5 秒内结束。',
+        '生效角色：玄鸦\n生效技能：百鬼夜行（大招）\n鬼刃风暴外侧增加一层反向刀环，每段造成 35% ATK。',
+        '生效角色：玄鸦\n生效技能：百鬼夜行（大招）\n最后一段鬼刃向当前面向追加 120px 余锋，造成 100% ATK。'
+      ]
+    },
+    {
+      id: 'V2R04', type: 'exclusive', hero: 'hongyi', rarity: 'legendary', spiritLineV2: true, spiritLineV2Ultimate: true, ultimateEnhancement: true, name: '焚羽追星', maxLevel: 3,
+      levels: [
+        '生效角色：红衣\n生效技能：焚天火雨（大招）\n额外增加 2 枚火羽陨星。',
+        '生效角色：红衣\n生效技能：焚天火雨（大招）\n场上有精英 / Boss 时，至少 4 枚陨星优先落向该目标。',
+        '生效角色：红衣\n生效技能：焚天火雨（大招）\n最后一枚陨星爆开后，向周围射出 6 枚小火羽，各造成 40% ATK。'
+      ]
     }
   ];
 }(typeof globalThis !== 'undefined' ? globalThis : this));

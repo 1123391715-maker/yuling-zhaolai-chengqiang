@@ -1,0 +1,537 @@
+{
+  "sourceDir": "概念图\\UI\\千抽",
+  "assets": [
+    {
+      "name": "summon-event-backdrop-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-backdrop-v1.png",
+      "source": "exec-fdc13d75-7d3e-4d82-bb97-705b8eddd57a.png",
+      "sourceBox": [
+        0,
+        0,
+        1672,
+        941
+      ],
+      "size": [
+        1672,
+        941
+      ],
+      "kind": "scene-backdrop"
+    },
+    {
+      "name": "summon-event-reference-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-reference-v1.png",
+      "source": "confirmed visual reference crop",
+      "sourceBox": [
+        16,
+        10,
+        399,
+        711
+      ],
+      "size": [
+        750,
+        1334
+      ],
+      "kind": "approved-reference-baseline"
+    },
+    {
+      "name": "summon-event-panel-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-panel-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        51,
+        41,
+        331,
+        476
+      ],
+      "size": [
+        280,
+        435
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-reward-card-normal-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-reward-card-normal-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        417,
+        41,
+        668,
+        476
+      ],
+      "size": [
+        251,
+        435
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-reward-card-claimable-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-reward-card-claimable-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        766,
+        41,
+        1021,
+        475
+      ],
+      "size": [
+        255,
+        434
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-reward-card-claimed-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-reward-card-claimed-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        1119,
+        41,
+        1371,
+        476
+      ],
+      "size": [
+        252,
+        435
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-reward-card-locked-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-reward-card-locked-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        53,
+        509,
+        255,
+        783
+      ],
+      "size": [
+        202,
+        274
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-detail-panel-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-detail-panel-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        300,
+        552,
+        679,
+        778
+      ],
+      "size": [
+        379,
+        226
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-button-normal-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-button-normal-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        708,
+        611,
+        1047,
+        736
+      ],
+      "size": [
+        339,
+        125
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-button-pressed-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-button-pressed-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        1070,
+        614,
+        1417,
+        741
+      ],
+      "size": [
+        347,
+        127
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-button-disabled-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-button-disabled-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        14,
+        881,
+        349,
+        1006
+      ],
+      "size": [
+        335,
+        125
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-day-tab-active-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-day-tab-active-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        390,
+        900,
+        667,
+        992
+      ],
+      "size": [
+        277,
+        92
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-day-tab-inactive-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-day-tab-inactive-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        713,
+        900,
+        983,
+        992
+      ],
+      "size": [
+        270,
+        92
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-title-ornament-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-title-ornament-v1.png",
+      "source": "UI框资源表-4x3-纯洋红.png",
+      "sourceBox": [
+        1020,
+        843,
+        1426,
+        1027
+      ],
+      "size": [
+        406,
+        184
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-top-ornament-gold-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-top-ornament-gold-v1.png",
+      "source": "花纹线框资源表-3x3-纯洋红.png",
+      "sourceBox": [
+        35,
+        176,
+        398,
+        261
+      ],
+      "size": [
+        363,
+        85
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-top-ornament-bronze-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-top-ornament-bronze-v1.png",
+      "source": "花纹线框资源表-3x3-纯洋红.png",
+      "sourceBox": [
+        447,
+        201,
+        817,
+        266
+      ],
+      "size": [
+        370,
+        65
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-corner-ornament-right-top-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-corner-ornament-right-top-v1.png",
+      "source": "花纹线框资源表-3x3-纯洋红.png",
+      "sourceBox": [
+        913,
+        82,
+        1212,
+        387
+      ],
+      "size": [
+        299,
+        305
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-corner-ornament-left-bottom-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-corner-ornament-left-bottom-v1.png",
+      "source": "花纹线框资源表-3x3-纯洋红.png",
+      "sourceBox": [
+        37,
+        493,
+        336,
+        799
+      ],
+      "size": [
+        299,
+        306
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-hanging-pendant-pair-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-hanging-pendant-pair-v1.png",
+      "source": "花纹线框资源表-3x3-纯洋红.png",
+      "sourceBox": [
+        528,
+        473,
+        729,
+        786
+      ],
+      "size": [
+        201,
+        313
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-divider-line-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-divider-line-v1.png",
+      "source": "花纹线框资源表-3x3-纯洋红.png",
+      "sourceBox": [
+        874,
+        624,
+        1217,
+        641
+      ],
+      "size": [
+        343,
+        17
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-portrait-frame-line-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-portrait-frame-line-v1.png",
+      "source": "花纹线框资源表-3x3-纯洋红.png",
+      "sourceBox": [
+        91,
+        855,
+        321,
+        1188
+      ],
+      "size": [
+        230,
+        333
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-detail-panel-line-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-detail-panel-line-v1.png",
+      "source": "花纹线框资源表-3x3-纯洋红.png",
+      "sourceBox": [
+        440,
+        966,
+        820,
+        1094
+      ],
+      "size": [
+        380,
+        128
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-side-pendant-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-side-pendant-v1.png",
+      "source": "花纹线框资源表-3x3-纯洋红.png",
+      "sourceBox": [
+        989,
+        875,
+        1086,
+        1183
+      ],
+      "size": [
+        97,
+        308
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-emblem-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-emblem-v1.png",
+      "source": "装饰图标资源表-3x2-纯洋红.png",
+      "sourceBox": [
+        0,
+        0,
+        512,
+        512
+      ],
+      "size": [
+        433,
+        439
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-day-badge-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-day-badge-v1.png",
+      "source": "装饰图标资源表-3x2-纯洋红.png",
+      "sourceBox": [
+        512,
+        0,
+        1024,
+        512
+      ],
+      "size": [
+        326,
+        476
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-decorative-plaque-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-decorative-plaque-v1.png",
+      "source": "装饰图标资源表-3x2-纯洋红.png",
+      "sourceBox": [
+        1024,
+        0,
+        1536,
+        512
+      ],
+      "size": [
+        343,
+        308
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-locked-seal-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-locked-seal-v1.png",
+      "source": "装饰图标资源表-3x2-纯洋红.png",
+      "sourceBox": [
+        0,
+        512,
+        512,
+        1024
+      ],
+      "size": [
+        350,
+        387
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-starburst-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-starburst-v1.png",
+      "source": "装饰图标资源表-3x2-纯洋红.png",
+      "sourceBox": [
+        512,
+        512,
+        1024,
+        1024
+      ],
+      "size": [
+        335,
+        415
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-claim-glow-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-claim-glow-v1.png",
+      "source": "装饰图标资源表-3x2-纯洋红.png",
+      "sourceBox": [
+        1024,
+        512,
+        1536,
+        1024
+      ],
+      "size": [
+        405,
+        353
+      ],
+      "kind": "sheet-slice"
+    },
+    {
+      "name": "summon-event-title-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-title-v1.png",
+      "source": "活动美术字-千抽请灵符盛典-透明.png",
+      "sourceBox": [
+        0,
+        0,
+        1873,
+        840
+      ],
+      "size": [
+        1872,
+        542
+      ],
+      "kind": "transparent-single"
+    },
+    {
+      "name": "summon-event-hero-hongyi-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-hero-hongyi-v1.png",
+      "source": "红衣御灵师-透明.png",
+      "sourceBox": [
+        0,
+        0,
+        1122,
+        1402
+      ],
+      "size": [
+        1122,
+        1391
+      ],
+      "kind": "transparent-single"
+    },
+    {
+      "name": "summon-event-hero-hongyi-v2",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-hero-hongyi-v2.png",
+      "source": "summon-event-hero-hongyi-v1.png + transparent matte cleanup",
+      "sourceBox": [
+        0,
+        0,
+        1122,
+        1391
+      ],
+      "size": [
+        1122,
+        1391
+      ],
+      "kind": "transparent-single"
+    },
+    {
+      "name": "summon-event-return-arrow-v1",
+      "path": "assets/art/ui/summon-ticket-event-v1/summon-event-return-arrow-v1.png",
+      "source": "confirmed visual reference crop + transparent matte cleanup",
+      "sourceBox": [
+        25,
+        1500,
+        120,
+        112
+      ],
+      "size": [
+        120,
+        112
+      ],
+      "kind": "transparent-single"
+    }
+  ],
+  "excluded": [
+    "奖励图标（已有，不重复切）",
+    "请灵符（已有，不重复切）"
+  ]
+}

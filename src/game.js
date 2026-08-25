@@ -3,6 +3,11 @@
   var YL = root.YL = root.YL || {};
   var A = YL.Art, C = YL.COLORS, W = YL.W, H = YL.H;
 
+  function uiFontFamily(size) {
+    if (YL.uiFontFamily) return YL.uiFontFamily(size);
+    return Number(size) >= 22 ? (YL.UI_FONT_TITLE_FAMILY || '"MaShanZheng","Microsoft YaHei","PingFang SC",sans-serif') : (YL.UI_FONT_BODY_FAMILY || '"Microsoft YaHei","PingFang SC",sans-serif');
+  }
+
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function lerp(a, b, t) { return a + (b - a) * t; }
   function dist2(a, b, c, d) { var x = a - c, y = b - d; return x * x + y * y; }
@@ -96,11 +101,16 @@
   };
 
   Game.prototype.mapPoint = function (p) {
+    if (YL.UI && YL.UI.mapPoint) {
+      if (this.platform === 'wechat') return YL.UI.mapPoint(p.clientX, p.clientY, { width: this.screenW, height: this.screenH });
+      var r = this.canvas.getBoundingClientRect();
+      return YL.UI.mapPoint(p.clientX, p.clientY, r);
+    }
     if (this.platform === 'wechat') {
       return { x: p.clientX / this.screenW * W, y: p.clientY / this.screenH * H };
     }
-    var r = this.canvas.getBoundingClientRect();
-    return { x: (p.clientX - r.left) / r.width * W, y: (p.clientY - r.top) / r.height * H };
+    var fallbackRect = this.canvas.getBoundingClientRect();
+    return { x: (p.clientX - fallbackRect.left) / fallbackRect.width * W, y: (p.clientY - fallbackRect.top) / fallbackRect.height * H };
   };
 
   Game.prototype.bindInput = function () {
@@ -1049,7 +1059,7 @@
 
   Game.prototype.wrapText = function (ctx, value, x, y, maxW, size, color) {
     var chars = value.split(''), line = '', lines = [];
-    ctx.save(); ctx.font = '700 ' + size + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.save(); ctx.font = '700 ' + size + 'px ' + uiFontFamily(size);
     for (var i = 0; i < chars.length; i++) {
       var test = line + chars[i];
       if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = chars[i]; }

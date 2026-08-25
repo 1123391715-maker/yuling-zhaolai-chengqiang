@@ -3,6 +3,11 @@
   var YL = root.YL = root.YL || {};
   var A = YL.Art, C = YL.COLORS, W = YL.W, H = YL.H;
 
+  function uiFontFamily(size) {
+    if (YL.uiFontFamily) return YL.uiFontFamily(size);
+    return Number(size) >= 22 ? (YL.UI_FONT_TITLE_FAMILY || '"MaShanZheng","Microsoft YaHei","PingFang SC",sans-serif') : (YL.UI_FONT_BODY_FAMILY || '"Microsoft YaHei","PingFang SC",sans-serif');
+  }
+
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function dist2(ax, ay, bx, by) { var dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
   function distance(ax, ay, bx, by) { return Math.sqrt(dist2(ax, ay, bx, by)); }
@@ -441,9 +446,14 @@
   };
 
   Game.prototype.mapPoint = function (p) {
+    if (YL.UI && YL.UI.mapPoint) {
+      if (this.platform === 'wechat') return YL.UI.mapPoint(p.clientX, p.clientY, { width: this.screenW, height: this.screenH });
+      var rect = this.canvas.getBoundingClientRect();
+      return YL.UI.mapPoint(p.clientX, p.clientY, rect);
+    }
     if (this.platform === 'wechat') return { x: p.clientX / this.screenW * W, y: p.clientY / this.screenH * H };
-    var rect = this.canvas.getBoundingClientRect();
-    return { x: (p.clientX - rect.left) / rect.width * W, y: (p.clientY - rect.top) / rect.height * H };
+    var fallbackRect = this.canvas.getBoundingClientRect();
+    return { x: (p.clientX - fallbackRect.left) / fallbackRect.width * W, y: (p.clientY - fallbackRect.top) / fallbackRect.height * H };
   };
 
   Game.prototype.bindInput = function () {
@@ -4596,7 +4606,7 @@
 
   Game.prototype.drawTalismanDescription = function (ctx, value, x, y, maxWidth, color) {
     var chars = String(value || '').split(''), line = '', lines = [];
-    ctx.save(); ctx.font = '700 15px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.save(); ctx.font = '700 15px ' + uiFontFamily(15);
     for (var i = 0; i < chars.length; i++) {
       var next = line + chars[i];
       if (ctx.measureText(next).width > maxWidth && line) {
@@ -4717,7 +4727,7 @@
   // intentionally adds a soft shadow, so upgrade-card copy uses this sharp path.
   Game.prototype.drawUpgradeText = function (ctx, value, x, y, size, color, align, weight) {
     ctx.save();
-    ctx.font = (weight || '700') + ' ' + size + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.font = (weight || '700') + ' ' + size + 'px ' + uiFontFamily(size);
     ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = color; ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
     ctx.fillText(value, x, y);
@@ -4726,7 +4736,7 @@
 
   Game.prototype.wrapUpgradeText = function (ctx, value, x, y, maxWidth, size, color) {
     var chars = String(value || '').split(''), line = '', lines = [];
-    ctx.save(); ctx.font = '700 ' + size + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.save(); ctx.font = '700 ' + size + 'px ' + uiFontFamily(size);
     for (var i = 0; i < chars.length; i++) {
       var test = line + chars[i];
       if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = chars[i]; } else line = test;
@@ -4843,7 +4853,7 @@
 
   Game.prototype.wrapText = function (ctx, value, x, y, maxWidth, size, color) {
     var chars = value.split(''), line = '', lines = [];
-    ctx.save(); ctx.font = '700 ' + size + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.save(); ctx.font = '700 ' + size + 'px ' + uiFontFamily(size);
     for (var i = 0; i < chars.length; i++) {
       var test = line + chars[i];
       if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = chars[i]; } else line = test;

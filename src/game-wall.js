@@ -3,6 +3,11 @@
   var YL = root.YL = root.YL || {};
   var A = YL.Art, C = YL.COLORS, W = YL.W, H = YL.H;
 
+  function uiFontFamily(size) {
+    if (YL.uiFontFamily) return YL.uiFontFamily(size);
+    return Number(size) >= 22 ? (YL.UI_FONT_TITLE_FAMILY || '"MaShanZheng","Microsoft YaHei","PingFang SC",sans-serif') : (YL.UI_FONT_BODY_FAMILY || '"Microsoft YaHei","PingFang SC",sans-serif');
+  }
+
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function dist2(ax, ay, bx, by) { var dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
   function distance(ax, ay, bx, by) { return Math.sqrt(dist2(ax, ay, bx, by)); }
@@ -22,12 +27,26 @@
     var m = Math.floor(seconds / 60), s = seconds % 60;
     return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
   }
+  function formatAmount(value) {
+    value = Math.max(0, Math.round(value || 0));
+    return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+  function localQaMode() {
+    if (!root.location || !root.location.search) return '';
+    var host = root.location.hostname || '';
+    if (host !== '127.0.0.1' && host !== 'localhost') return '';
+    var match = /[?&]qa=([^&]+)/.exec(root.location.search);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
   function spellCost(key) {
     return SPELL_META[key] && SPELL_META[key].cost || 1;
   }
   function spiritLampTuning() {
     var tuning = battleTuning();
     return tuning.spiritLamp || tuning.lamp || {};
+  }
+  function eliteDrawTuning() {
+    return battleTuning().eliteDraw || {};
   }
   function enemyDensityTuning() {
     var tuning = battleTuning();
@@ -113,13 +132,18 @@
   };
 
   var BOARD_H = 960;
-  // 城墙战斗最小验证模式：角色固定站位，只保留自动普攻。
-  // 技能、强化、角色生命、阻挡、移动与魂归暂时停用。
+  // 城墙战斗最小验证模式：角色固定站位，御灵自动普攻，阵主支持点击手动普攻。
+  // 技能、强化、角色生命、移动与魂归暂时停用。
   var WALL_MODE = true;
   // Wall Mode uses a visual "defense line" instead of the old abstract breach
   // center point. Enemies damage the wall only when their foot point reaches
   // this line, so they no longer appear to attack empty air above the formation.
   var WALL_DEFENSE_LINE_Y = 930;
+  // 召唤引导仍使用脚点触发；首个攻击引导另用敌人头顶越过进度框的触发点。
+  var WALL_TUTORIAL_PROGRESS_TRIGGER_Y = 150;
+  var WALL_TUTORIAL_ATTACK_HEAD_TRIGGER_Y = 132;
+  // 技能教学要等第五波怪潮真正推进过战场中线，避免空场解锁呼风。
+  var WALL_TUTORIAL_SKILL_PRESSURE_TRIGGER_Y = 500;
   var WALL_BREACH_Y = WALL_DEFENSE_LINE_Y; // legacy name for older score/targeting helpers
   var WALL_EMERGENCY_TARGET_DISTANCE = 180;
   var WALL_EMERGENCY_TARGET_SECONDS = 1.6;
@@ -138,9 +162,29 @@
     hongyi: { scale: .73 },
     qingyi: { scale: .74 },
     suwen: { scale: .74 },
-    xuanya: { scale: .73 }
+    xuanya: { scale: .73 },
+    // 女魃立绘原图四周留白明显；这里按可见身形校准到与其他御灵接近的显示高度。
+    nuba: { scale: 1.02 }
   };
-  var WALL_HERO_ORDER = ['hongyi', 'huangjin', 'xuanya', 'qingyi', 'suwen'];
+  // 女魃全身素材带有较大透明边距；布阵卡片/网格按有效身形裁剪，使其与其他御灵视觉大小一致。
+  var FORMATION_HERO_SOURCE_CROPS = {
+    nuba: { x: 300, y: 255, w: 430, h: 730 }
+  };
+  function drawFormationHeroSprite(ctx, img, centerX, baseY, maxW, maxH, type, alpha) {
+    if (!img || !(img.width || img.naturalWidth)) return false;
+    var iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight;
+    var crop = FORMATION_HERO_SOURCE_CROPS[type];
+    var sx = crop ? crop.x : 0, sy = crop ? crop.y : 0;
+    var sw = crop ? crop.w : iw, sh = crop ? crop.h : ih;
+    var scale = Math.min(maxW / sw, maxH / sh);
+    var w = sw * scale, h = sh * scale;
+    ctx.save();
+    ctx.globalAlpha = alpha == null ? 1 : alpha;
+    ctx.drawImage(img, sx, sy, sw, sh, centerX - w / 2, baseY - h, w, h);
+    ctx.restore();
+    return true;
+  }
+  var WALL_HERO_ORDER = ['hongyi', 'huangjin', 'xuanya', 'qingyi', 'nuba', 'suwen'];
   var WALL_UNLOCKED_HERO_TYPES = ['huangjin', 'hongyi', 'xuanya'];
   var WALL_DEFAULT_FORMATION_GRIDS = [1, 2, 3];
   // Single source of truth for Wall Mode combat sockets. Formation order,
@@ -153,17 +197,42 @@
     { x: 487, y: 999 },
     { x: 589, y: 1048 }
   ];
+  // 1-2「御灵守备」原型：阵位不再是静态炮台，而是五个不可手动操作的守备区。
+  // 御灵只会在自己的区间内自动前压接敌、回撤；阵主始终留在后方持续输出。
+  // 阵型固定为「前二、后三」：2 / 4 号魂位在前线，1 / 3 / 5 号魂位守后。
+  // 这是战斗站位，不改变布阵页的卡牌/阵位编号与上阵顺序。
+  var SPIRIT_LINE_HOME_SLOTS = [
+    { x: 86, y: 790 }, { x: 230, y: 660 }, { x: 375, y: 800 },
+    { x: 520, y: 660 }, { x: 664, y: 790 }
+  ];
+  // 1-2 原型只开放三名初始御灵；他们由布阵结果决定落在哪个魂位，进场即参战。
+  var SPIRIT_LINE_STARTER_TYPES = ['huangjin', 'hongyi', 'xuanya'];
+  // 首关召唤沿用城墙阵位：左二红衣、中间黄巾、第四位玄鸦。
+  var WALL_FIRST_STAGE_STARTER_TYPES = ['hongyi', 'huangjin', 'xuanya'];
+  var SPIRIT_LINE_MIN_Y = 520;
+  var SPIRIT_LINE_MAX_Y = 828;
+  // 仅供 1-2「御灵守备」V2 使用。这里不覆写旧关卡的角色参数或攻击逻辑。
+  // 玩家看到的攻速统一按“攻击次数/秒”表达；内部仍换算为攻击间隔进行计时。
+  var SPIRIT_LINE_V2_HERO_CONFIG = {
+    // 基础局留出动作辨识空间；数值不靠提高基础攻速堆叠，强化后再突破节奏上限。
+    huangjin: { attackType: 'melee', attackSpeed: .60, attackRange: 160, search: 210, multiplier: .85, block: 2, windup: .22, ultimate: 40, scale: .74 },
+    xuanya: { attackType: 'melee', attackSpeed: .98, attackRange: 150, search: 200, multiplier: 1.15, block: 1, windup: .20, ultimate: 35, scale: .76 },
+    hongyi: { attackType: 'ranged', attackSpeed: .92, attackRange: 850, search: 900, multiplier: .50, block: 0, windup: .22, ultimate: 40, scale: .76 }
+  };
   // Fixed-position combat uses these radii for targeting, range display and UI text.
   var WALL_HERO_ATTACK_RANGE = {
     huangjin: 580,
     hongyi: 900,
     qingyi: 850,
     suwen: 800,
-    xuanya: 850
+    xuanya: 850,
+    nuba: 900
   };
-  var WALL_ALLOWED_ROGUE_UPGRADES = ['E01', 'E13', 'E11', 'E02', 'E03', 'E14', 'E16', 'E04', 'E07', 'E17', 'E18', 'E08'];
+  var WALL_ALLOWED_ROGUE_UPGRADES = ['E01', 'E13', 'E11', 'E02', 'E03', 'E14', 'E16', 'E04', 'E07', 'E17', 'E18', 'E08', 'N01', 'N02', 'N03', 'N04'];
   var WALL_ULTIMATE_UNLOCK_REQUIRED = 4;
-  var WALL_ULTIMATE_UNLOCK_UPGRADES = { huangjin: 'E02', hongyi: 'E04', xuanya: 'E08', qingyi: 'Q05', suwen: 'E10' };
+  var WALL_ULTIMATE_UNLOCK_UPGRADES = { huangjin: 'E02', hongyi: 'E04', xuanya: 'E08', qingyi: 'Q05', suwen: 'E10', nuba: 'N03' };
+  var SPIRIT_LINE_V2_ULTIMATE_UPGRADES = { huangjin: 'V2H03', xuanya: 'V2X03', hongyi: 'V2R03' };
+  var SPIRIT_LINE_V2_ULTIMATE_ENHANCEMENT_UPGRADES = { huangjin: 'V2H04', xuanya: 'V2X04', hongyi: 'V2R04' };
   function isWallUltimateUnlockUpgrade(upgrade) {
     return !!(upgrade && (upgrade.ultimateUnlock || WALL_ULTIMATE_UNLOCK_UPGRADES[upgrade.hero] === upgrade.id));
   }
@@ -188,9 +257,25 @@
     E21: { skill: '问命归一', kind: '天赋' },
     E22: { skill: '问命归一', kind: '天赋' },
     E10: { skill: '天命星陨', kind: '大招' },
+    N01: { skill: '玄旱落仪', kind: '普攻' },
+    N02: { skill: '天仪共鸣', kind: '连携' },
+    N03: { skill: '赤地无疆', kind: '大招' },
+    N04: { skill: '覆日天门', kind: '大招' },
     E11: { skill: '山岳回响', kind: '天赋' },
     E12: { skill: '裂地聚阵', kind: '天赋' },
-    E13: { skill: '重鼓', kind: '天赋' }
+    E13: { skill: '重鼓', kind: '天赋' },
+    V2H01: { skill: '撼地', kind: '普攻' },
+    V2H02: { skill: '镇甲', kind: '连携' },
+    V2X01: { skill: '断魄横斩', kind: '普攻' },
+    V2X02: { skill: '饮血残阵', kind: '连携' },
+    V2R01: { skill: '火羽连珠', kind: '普攻' },
+    V2R02: { skill: '贯日符', kind: '连携' },
+    V2H03: { skill: '岳镇八荒', kind: '大招' },
+    V2X03: { skill: '百鬼夜行', kind: '大招' },
+    V2R03: { skill: '焚天火雨', kind: '大招' },
+    V2H04: { skill: '岳镇八荒', kind: '大招' },
+    V2X04: { skill: '百鬼夜行', kind: '大招' },
+    V2R04: { skill: '焚天火雨', kind: '大招' }
   };
   var HUANGJIN_PREVIEW_MODES = [
     { id: 'base', label: '\u57fa\u7840', upgrade: null },
@@ -247,7 +332,7 @@
       defenseStat: 15, ultimate: 18, scale: .70
     },
     xuanya: {
-      slot: 4, hp: 560, block: 2, search: 850, range: 850, move: 14,
+      slot: 3, hp: 560, block: 2, search: 850, range: 850, move: 14,
       damage: 76, attackInterval: .82, attackMultiplier: 1,
       attackType: 'ranged', projectile: 560, attackWindup: .2, attackRecovery: .34,
       ultimate: 13, scale: .72
@@ -272,23 +357,27 @@
   };
   HERO_META = {
     hongyi: {
-      name: '红衣', faction: '鬼族', job: '输出', role: '焚火术士',
+      name: '红衣', faction: '鬼族', factionName: '黄泉', factionSubtitle: '鬼', quality: '灵', job: '输出', role: '焚火术士',
       color: C.fire, sprite: 'heroHongyi', icon: 0
     },
     xuanya: {
-      name: '玄鸦', faction: '妖族', job: '输出', role: '鸦痕收割',
+      name: '玄鸦', faction: '妖族', factionName: '万妖', factionSubtitle: '妖', quality: '灵', job: '输出', role: '鸦痕收割',
       color: '#d9c7a6', sprite: 'heroXuanya', icon: 4
     },
     huangjin: {
-      name: '黄巾', faction: '人族', job: '坦克', role: '重鼓镇场',
+      name: '黄巾', faction: '人族', factionName: '红尘', factionSubtitle: '人', quality: '凡', job: '坦克', role: '重鼓镇场',
       color: C.gold, sprite: 'heroHuangjin', icon: 6
     },
     suwen: {
-      name: '素问', faction: '神', job: '输出', role: '太素星使',
+      name: '素问', faction: '神', factionName: '九霄', factionSubtitle: '仙·佛·道', quality: '凡', job: '输出', role: '太素星使',
       color: C.jade, sprite: 'heroSuwen', icon: 7
     },
+    nuba: {
+      name: '女魃', faction: '魔', factionName: '混沌', factionSubtitle: '旱神', quality: '绝', job: '输出', role: '灾厄群攻',
+      color: '#c7ad7e', sprite: 'heroNuba', icon: 3
+    },
     qingyi: {
-      name: '青衣', faction: '修士', job: '辅助', role: '照破辅助',
+      name: '青衣', faction: '修士', factionName: '九霄', factionSubtitle: '仙·佛·道', quality: '绝', job: '辅助', role: '照破辅助',
       color: '#f7e6a3', sprite: 'heroQingyi', icon: 2
     }
   };
@@ -301,7 +390,7 @@
       defenseStat: 15, ultimate: 18, scale: .56
     },
     xuanya: {
-      slot: 4, hp: 720, block: 2, search: 850, range: 850, move: 14,
+      slot: 3, hp: 720, block: 2, search: 850, range: 850, move: 14,
       damage: 78, attackInterval: .87, attackMultiplier: 1,
       attackType: 'ranged', projectile: 560, attackWindup: .18, attackRecovery: .28,
       defenseStat: 28, ultimate: 15, scale: .58
@@ -318,6 +407,12 @@
       attackType: 'ranged', projectile: 620, attackWindup: .26, attackRecovery: .34,
       defenseStat: 20, ultimate: 17, scale: .56
     },
+    nuba: {
+      slot: 4, hp: 680, block: 1, search: 900, range: 900, move: 14,
+      damage: 128, attackInterval: 1.18, attackMultiplier: 1,
+      attackType: 'ranged', projectile: 0, attackWindup: .30, attackRecovery: .40,
+      defenseStat: 18, ultimate: 19, scale: 1.02
+    },
     qingyi: {
       slot: 0, hp: 600, block: 1, search: 850, range: 850, move: 14,
       damage: 50, attackInterval: 1.25, attackMultiplier: 1,
@@ -325,6 +420,10 @@
       defenseStat: 35, ultimate: 13, scale: .56
     }
   };
+
+  // 战斗内部仍使用旧 faction key 以兼容既有技能判定；所有新 UI 文案统一走最终五阵营包装。
+  var DISPLAY_FACTION_NAMES = { '人族': '红尘', '妖族': '万妖', '鬼族': '黄泉', '修士': '九霄', '神': '九霄', '魔': '混沌' };
+  function displayFactionName(faction) { return DISPLAY_FACTION_NAMES[faction] || faction || '未定阵营'; }
 
   var UPGRADE_TYPE_LABELS = { common: '通用', faction: '阵营', exclusive: '专属' };
   var RARITY_LABELS = { common: '普通', rare: '稀有', legendary: '传说' };
@@ -340,6 +439,8 @@
   var FORMATION_GRID = { x: 64, y: 430, w: 622, h: 230, cols: 5, rows: 1 };
   var FORMATION_CARD_AREA = { x: 26, y: 836, w: 698, h: 296 };
   var FORMATION_START = { x: 170, y: 1192, w: 410, h: 104 };
+  // 复用千抽页左下角返回箭头的尺寸与位置，适配微信竖屏单手点击。
+  var FORMATION_BACK = { x: 20, y: 1174, w: 120, h: 112 };
 
   var SPELL_KEYS = ['wind', 'rain', 'empty'];
   var SPELL_META = {
@@ -363,6 +464,8 @@
     rain: { x: 540, y: 1262 },
     empty: { x: 644, y: 1262 }
   };
+  // 初版城墙战斗只展示已经交付的主角技能；未交付技能保留配置，暂不进入玩家操作面板。
+  var WALL_VISIBLE_SPELL_KEYS = ['wind'];
   var AUTO_CAST_BUTTON = { x: 718, y: 1262, r: 30 };
   var TALISMAN_BUTTON = { x: 684, y: 386, w: 54, h: 66 };
   // Generated panel aspect is 849:1421. Keep this exact ratio at runtime so
@@ -370,6 +473,14 @@
   var TALISMAN_MODAL = { x: 72, y: 118, w: 606, h: 1014 };
   var TALISMAN_MODAL_CLOSE = { offsetX: -57, offsetY: 148, radius: 23, hitRadius: 34 };
   var TALISMAN_ROWS = { x: 112, y: 422, w: 526, h: 164, step: 176, visible: 3 };
+  // 精英掉落演出：先让玩家看懂“大签筒 + 筒内竹签”，再进入出签和强化横条。
+  var ELITE_DRAW_TIMING = {
+    introEnd: .45,
+    shakeEnd: 4.05,
+    pauseEnd: 4.45,
+    ejectEnd: 5.25,
+    revealEnd: 6.35
+  };
   var WALL_RUNE_DROP_LIFE = 12;
   var WALL_RUNE_LONG_PRESS = .18;
   var WALL_RUNE_SHELF = { x: 680, y: 468, w: 58, h: 214, slot: 48 };
@@ -380,7 +491,7 @@
       effect: '持续伤害 +20%；6 跳小爆燃'
     },
     breakPearl: {
-      name: '破阵珠', short: '破', color: '#ffd36e', rarity: '金',
+      name: '破界珠', short: '破', color: '#ffd36e', rarity: '金',
       desc: '装载御灵连续命中同一敌人会蓄势，第 5 次命中额外造成 +40% 伤害，然后重新计数。',
       effect: '同目标第 5 击 +40%'
     },
@@ -397,6 +508,7 @@
     6: 'breakPearl'
   };
   var SPIRIT_LAMP_MAX = 5;
+  var SPIRIT_LAMP_INTERVAL = 15;
   var SPIRIT_LAMP_X = [128, 210, 292, 374, 456, 538, 620];
   var SPIRIT_LAMP_Y = 908;
   // Generated card-frame sheet: common blue, rare amber, legendary crimson.
@@ -416,7 +528,7 @@
   // Card frame color is now gameplay-readable:
   // 普攻 = blue/common frame, 天赋/被动 = yellow/rare frame, 大招/必杀 = red/legendary frame.
   // Keep upgrade.rarity untouched for drop/power tuning; frameRarity is visual only.
-  var UPGRADE_CARD_KIND_FRAMES = { '普攻': 'common', '天赋': 'rare', '被动': 'rare', '大招': 'legendary', '必杀': 'legendary' };
+  var UPGRADE_CARD_KIND_FRAMES = { '普攻': 'common', '天赋': 'rare', '连携': 'rare', '被动': 'rare', '大招': 'legendary', '必杀': 'legendary' };
   var UPGRADE_CARD_FRAME_COLORS = { common: C.blue, rare: C.gold, legendary: C.fire };
   // Title, footer, star strips, seals and rune strips cut from the approved UI art.
   var UPGRADE_CARD_ORNAMENT_CROPS = {
@@ -441,6 +553,10 @@
   var UPGRADE_CARD_HEIGHT = 505;
   var UPGRADE_CARD_TOP = 314;
   var UPGRADE_CARD_GAP = 15;
+  var UPGRADE_REWARDED_ACTIONS = {
+    refresh: { x: 74, y: 1008, w: 276, h: 70 },
+    all: { x: 400, y: 1008, w: 276, h: 70 }
+  };
   // Printed title/icon/tag plates are not geometrically centred in every
   // generated frame. Keep one shared anchor for all card content so it can be
   // tuned by quality without pulling the star, title, icon and tag apart.
@@ -526,6 +642,11 @@
     this.dragOrigin = null;
     this.spellPress = null;
     this.heroPress = null;
+    this.protagonistManualAttackCd = 0;
+    this.protagonistAttackFlash = 0;
+    this.protagonistAttackCount = 0;
+    this.protagonistCastTime = 0;
+    this.protagonistCastMax = 0;
     this.runePress = null;
     this.dragRune = null;
     this.runeDrops = [];
@@ -538,16 +659,104 @@
     this.spellHelpKey = null;
     this.spellHelpTime = 0;
     this.spellAuto = true;
+    this.speed = 1;
     this.paused = false;
     this.infoOverlay = null;
     this.talismanHeroId = null;
     this.talismanScroll = 0;
     this.talismanOverlayWasPaused = false;
     this.formationSlots = [];
+    this.formationMode = 'battle';
     this.formationSelected = null;
     this.formationMoveFrom = null;
     this.formationNotice = '';
     this.formationNoticeTime = 0;
+    this.selectedStageIndex = 0;
+    this.stageWaveConfig = null;
+    this.firstStageTutorial = null;
+    this.battleResult = null;
+    this.resultNotice = '';
+    this.resultNoticeUntil = 0;
+    this.firstChargeModal = false;
+    // 仅为当前弹窗的预览页签；奖励领取资格仍由 Progression 的真实时间状态决定。
+    this.firstChargePreviewDay = 0;
+    // 千抽盛典的任务进度与领取状态跟随局外档案；滚动位置只属于当前页面实例。
+    this.summonEventSelected = 0;
+    this.summonEventClaimed = {};
+    this.summonEventScroll = 0;
+    this.summonEventDrag = null;
+    this.summonEventButtonPressedUntil = 0;
+    this.summonEventReturnPage = 'main';
+    this.recruitReturnPage = 'sect';
+    this.qaMode = localQaMode();
+    this.progression = new YL.Progression({ platform: this.platform, wx: this.wx });
+    // 成长页 QA 使用独立夹具，不覆盖玩家本机档案。
+    if (this.qaMode === 'first-stage-tutorial') {
+      // 独立灰盒夹具：从登录直接进入首关引导，不读取也不写入玩家本机存档。
+      this.progression.volatile = true;
+      this.progression.profile.guideStep = 'stage-1-1';
+      this.selectedStageIndex = 0;
+    } else if (this.qaMode === 'heroes' || this.qaMode === 'heroes-pre5' || this.qaMode === 'hero-detail' || this.qaMode === 'hero-star') {
+      this.progression.profile = this.progression.fixture();
+      if (this.qaMode === 'heroes-pre5') {
+        this.progression.profile.heroes.suwen.owned = false;
+        this.progression.profile.coreHeroIds = ['hongyi', 'huangjin', 'xuanya', 'qingyi'];
+      }
+      this.progression.volatile = true;
+    } else if (this.qaMode === 'recruit-fixture') {
+      // 独立灰盒夹具：验证首次请灵，不读取也不写入玩家本机存档。
+      this.progression.volatile = true;
+      this.progression.profile.talisman = 10;
+      this.progression.profile.guideStep = 'recruit';
+    } else if (this.qaMode === 'first-charge-fixture') {
+      // 独立灰盒夹具：验证 1-3 后首充演示的直达、领取与第二卷跳转。
+      this.progression.volatile = true;
+      this.progression.profile.guideStep = 'first-charge';
+      this.progression.profile.completedStages['1-3'] = true;
+      this.firstChargeModal = true;
+    } else if (this.qaMode === 'first-charge-day2-fixture') {
+      // 独立灰盒夹具：验证购买后的第 2 日领取，不等待真实 24 小时。
+      this.progression.volatile = true;
+      this.progression.profile.firstChargePurchased = true;
+      this.progression.profile.firstChargeStartAt = Date.now() - 86400001;
+      this.progression.profile.firstChargeDaysClaimed = [true, false, false];
+      this.progression.profile.completedStages['1-3'] = true;
+      this.progression.profile.guideStep = 'chapter-2-preview';
+      this.firstChargeModal = true;
+      this.firstChargePreviewDay = 1;
+    } else if (this.qaMode === 'first-charge-wait-day2-fixture') {
+      // 已领首日但未满 24 小时：用于验收“第二日可领取”的禁用按钮文案。
+      this.progression.volatile = true;
+      this.progression.profile.firstChargePurchased = true;
+      this.progression.profile.firstChargeStartAt = Date.now();
+      this.progression.profile.firstChargeDaysClaimed = [true, false, false];
+      this.progression.profile.completedStages['1-3'] = true;
+      this.progression.profile.guideStep = 'chapter-2-preview';
+      this.firstChargeModal = true;
+      this.firstChargePreviewDay = 1;
+    } else if (this.qaMode === 'first-charge-wait-day3-fixture') {
+      // 已领前两日且未满第 3 天：用于验收“第三日可领取”的禁用按钮文案。
+      this.progression.volatile = true;
+      this.progression.profile.firstChargePurchased = true;
+      this.progression.profile.firstChargeStartAt = Date.now() - 86400001;
+      this.progression.profile.firstChargeDaysClaimed = [true, true, false];
+      this.progression.profile.guideStep = 'chapter-2-preview';
+      this.firstChargeModal = true;
+      this.firstChargePreviewDay = 2;
+    } else if (this.qaMode === 'elite-draw-fixture') {
+      // 独立灰盒夹具：直开精英掉落结果弹窗，不读取也不写入玩家本机存档。
+      this.progression.volatile = true;
+      this.progression.profile.guideStep = 'guide-complete';
+    } else if (this.qaMode === 'summon-event') {
+      // 独立灰盒夹具：直接打开千抽活动页，不改变玩家本机存档。
+      this.progression.volatile = true;
+      this.progression.profile.completedStages['1-1'] = true;
+      this.progression.profile.completedStages['1-2'] = true;
+      this.progression.profile.completedStages['1-3'] = true;
+      this.progression.profile.completedStages['2-1'] = true;
+      this.progression.profile.guideStep = 'guide-complete';
+    }
+    this.assetsLoadFinished = false;
     this.cardUiTuning = this.loadCardUiTuning();
     this.cardEditor = { enabled: false, drag: null, dirty: false };
     this.huangjinPreviewMode = 'base';
@@ -588,25 +797,46 @@
     return null;
   };
 
+  Game.prototype.finishAssetLoad = function () {
+    if (this.assetsLoadFinished) return;
+    this.assetsLoadFinished = true;
+    if (this.qaMode === 'result-win' || this.qaMode === 'result-failure') this.openQaResultPreview(this.qaMode === 'result-win');
+    else if (this.qaMode === 'elite-draw-fixture') this.openQaEliteDrawPreview();
+    else if (this.qaMode === 'sect') this.openSectHome();
+    else if (this.qaMode === 'recruit' || this.qaMode === 'recruit-fixture') this.openRecruitHome();
+    else if (this.qaMode === 'first-charge-fixture' || this.qaMode === 'first-charge-day2-fixture' || this.qaMode === 'first-charge-wait-day2-fixture' || this.qaMode === 'first-charge-wait-day3-fixture') this.openStageHome();
+    else if (this.qaMode === 'summon-event') this.openSummonEvent('main');
+    else if (this.qaMode === 'heroes' || this.qaMode === 'heroes-pre5') this.openHeroesHome();
+    else if (this.qaMode === 'hero-detail' || this.qaMode === 'hero-star') this.openHeroDetail('hongyi', this.qaMode === 'hero-star' ? 'star' : 'level');
+    // 默认档案验收入口：用于检查首位御灵的 1 星初始状态，不套用高等级 QA 夹具。
+    else if (this.qaMode === 'hero-default') this.openHeroDetail('huangjin', 'level');
+    else this.state = 'login';
+  };
+
   Game.prototype.loadAssets = function () {
     var self = this, keys = Object.keys(YL.ASSETS);
     this.loadTotal = keys.length;
     keys.forEach(function (key) {
       var img = self.makeImage();
       if (!img) { self.loaded++; return; }
-      img.onload = function () { self.loaded++; if (self.loaded >= self.loadTotal) self.state = 'title'; };
-      img.onerror = function () { self.loaded++; if (self.loaded >= self.loadTotal) self.state = 'title'; };
+      img.onload = function () { self.loaded++; if (self.loaded >= self.loadTotal) self.finishAssetLoad(); };
+      img.onerror = function () { self.loaded++; if (self.loaded >= self.loadTotal) self.finishAssetLoad(); };
       img.src = YL.ASSETS[key];
       self.assets[key] = img;
     });
     this._loadingStartedAt = Date.now();
-    setTimeout(function () { if (self.state === 'loading') self.state = 'title'; }, 25000);
+    setTimeout(function () { if (self.state === 'loading') self.finishAssetLoad(); }, 25000);
   };
 
   Game.prototype.mapPoint = function (p) {
+    if (YL.UI && YL.UI.mapPoint) {
+      if (this.platform === 'wechat') return YL.UI.mapPoint(p.clientX, p.clientY, { width: this.screenW, height: this.screenH });
+      var rect = this.canvas.getBoundingClientRect();
+      return YL.UI.mapPoint(p.clientX, p.clientY, rect);
+    }
     if (this.platform === 'wechat') return { x: p.clientX / this.screenW * W, y: p.clientY / this.screenH * H };
-    var rect = this.canvas.getBoundingClientRect();
-    return { x: (p.clientX - rect.left) / rect.width * W, y: (p.clientY - rect.top) / rect.height * H };
+    var fallbackRect = this.canvas.getBoundingClientRect();
+    return { x: (p.clientX - fallbackRect.left) / fallbackRect.width * W, y: (p.clientY - fallbackRect.top) / fallbackRect.height * H };
   };
 
   Game.prototype.bindInput = function () {
@@ -764,6 +994,7 @@
   };
 
   Game.prototype.onMove = function (x, y) {
+    if (this.state === 'title' && YL.HomeUI && YL.HomeUI.move && YL.HomeUI.move(this, x, y)) return;
     var drag = this.cardEditor && this.cardEditor.drag;
     if (drag) {
       var offset = this.cardUiOffset(drag.rarity, drag.part);
@@ -787,8 +1018,196 @@
 
   Game.prototype.onDown = function (x, y) {
     this.audio.unlock();
+    // 首波攻击教学要求“点击界面”即可攻击；战场点击优先交给主角，避免引导遮罩先把首次点按拦掉。
+    if (this.state === 'battle' && this.isFirstStageTutorialAttackGuideActive && this.isFirstStageTutorialAttackGuideActive() &&
+      this.phase === 'wave' && this.battlefieldAimPointAt(x, y)) {
+      this.showProtagonistAimClick(x, y);
+      var tutorialAttackFiredBeforeBlock = this.fireProtagonistTalismanAt(x, y);
+      if (tutorialAttackFiredBeforeBlock) this.registerFirstStageTutorialAttack();
+      return;
+    }
+    if (YL.TutorialUI && YL.TutorialUI.blocksGameInput && YL.TutorialUI.blocksGameInput(this, x, y)) {
+      this.homeNotice = '请点击高亮位置继续';
+      this.homeNoticeUntil = this.time + 1.2;
+      this.message = '请点击高亮位置继续';
+      this.messageTime = 1.2;
+      this.audio.tone('hurt');
+      return;
+    }
+    if (this.state === 'login') {
+      if (y > 1030 && y < 1165) {
+        this.audio.tone('bell');
+        if (this.shouldStartFirstStageTutorial()) this.beginBattle();
+        else this.openStageHome();
+      }
+      return;
+    }
     if (this.state === 'title') {
-      if (y > 1030 && y < 1165) { this.audio.tone('bell'); this.openFormation(); }
+      var homeAction = YL.HomeUI && YL.HomeUI.hit ? YL.HomeUI.hit(this, x, y) : (y > 1030 && y < 1165 ? 'enter' : null);
+      if (homeAction === 'tutorialBlocked') {
+        this.homeNotice = '请点击高亮位置继续';
+        this.homeNoticeUntil = this.time + 1.2;
+        this.audio.tone('hurt');
+      } else if (homeAction === 'enter') {
+        this.audio.tone('bell');
+        this.taskGuideChallengeActive = null;
+        this.openFormation();
+      } else if (homeAction === 'sect') {
+        this.audio.tone('bell');
+        this.openSectHome();
+      } else if (homeAction === 'stageHome') {
+        this.audio.tone('bell');
+        this.openStageHome();
+      } else if (homeAction === 'prevStage' || homeAction === 'nextStage') {
+        this.selectStage(homeAction === 'prevStage' ? -1 : 1);
+      } else if (homeAction === 'recruit') {
+        this.audio.tone('bell');
+        this.openRecruitHome(this.homePage === 'heroes' ? 'heroes' : 'sect');
+      } else if (homeAction === 'heroes') {
+        this.audio.tone('bell');
+        this.openHeroesHome();
+      } else if (homeAction === 'formation') {
+        this.audio.tone('bell');
+        this.openFormation('default');
+      } else if (homeAction && homeAction.indexOf('hero:') === 0) {
+        this.audio.tone('bell');
+        this.openHeroDetail(homeAction.slice(5));
+      } else if (homeAction === 'heroBack') {
+        this.audio.tone('bell');
+        this.openHeroesHome();
+      } else if (homeAction === 'heroLevelTab') {
+        this.audio.tone('bell');
+        this.heroGrowthTab = 'level';
+      } else if (homeAction === 'heroStarTab') {
+        this.audio.tone('bell');
+        this.heroGrowthTab = 'star';
+      } else if (homeAction === 'heroUpgrade') {
+        this.audio.tone('bell');
+        this.tryHeroLevelUpgrade(this.selectedHeroId);
+      } else if (homeAction === 'coreReplaceOpen') {
+        this.audio.tone('bell');
+        this.coreReplaceCandidateId = this.selectedHeroId;
+      } else if (homeAction === 'coreReplaceCancel') {
+        this.audio.tone('bell');
+        this.coreReplaceCandidateId = null;
+      } else if (homeAction && homeAction.indexOf('coreReplace:') === 0) {
+        this.audio.tone('bell');
+        var replaced = this.progression && this.progression.replaceCoreHero(homeAction.slice(12), this.coreReplaceCandidateId);
+        this.coreReplaceCandidateId = null;
+        this.homeNotice = replaced && replaced.ok ? '建木灵位替换成功' : replaced && replaced.reason || '替换失败';
+        this.homeNoticeUntil = this.time + 2;
+      } else if (homeAction === 'heroStar') {
+        this.audio.tone('bell');
+        this.tryHeroStarUpgrade(this.selectedHeroId);
+      } else if (homeAction && homeAction.indexOf('heroSkill:') === 0) {
+        this.audio.tone('bell');
+        this.heroSkillTipIndex = clamp(parseInt(homeAction.slice(10), 10) || 0, 0, 2);
+        this.heroSkillDetailTab = 'star';
+      } else if (homeAction && homeAction.indexOf('heroSkillTipTab:') === 0) {
+        this.audio.tone('bell');
+        this.heroSkillDetailTab = homeAction.slice(16) === 'rogue' ? 'rogue' : 'star';
+      } else if (homeAction === 'heroSkillTipClose') {
+        this.audio.tone('bell');
+        this.heroSkillTipIndex = null;
+        this.heroSkillDetailTab = null;
+      } else if (homeAction === 'recruitBack') {
+        this.audio.tone('bell');
+        if (this.recruitReturnPage === 'heroes') this.openHeroesHome();
+        else if (this.recruitReturnPage === 'main') this.openStageHome();
+        else this.openSectHome();
+      } else if (homeAction === 'recruitInfo') {
+        this.audio.tone('bell');
+        this.homeNotice = '请灵规则说明待接入';
+        this.homeNoticeUntil = this.time + 1.8;
+      } else if (homeAction === 'recruitRecord') {
+        this.audio.tone('bell');
+        this.homeNotice = this.progression && this.progression.profile.recruitHistory.length
+          ? '已记录 ' + this.progression.profile.recruitHistory.length + ' 次请灵结果'
+          : '尚未进行请灵';
+        this.homeNoticeUntil = this.time + 1.8;
+      } else if (homeAction === 'recruitSingle' || homeAction === 'recruitTen') {
+        this.audio.tone('bell');
+        this.tryRecruit(homeAction === 'recruitTen' ? 10 : 1);
+      } else if (homeAction && homeAction.indexOf('recruitRevealCard:') === 0) {
+        this.audio.tone('bell');
+        this.revealRecruitCard(parseInt(homeAction.slice(18), 10));
+      } else if (homeAction && homeAction.indexOf('recruitRevealPreview:') === 0) {
+        this.audio.tone('bell');
+        this.previewRecruitDetail(parseInt(homeAction.slice(21), 10));
+      } else if (homeAction === 'recruitRevealAll') {
+        this.audio.tone('bell');
+        this.revealAllRecruitCards();
+      } else if (homeAction === 'recruitRevealDetailNext') {
+        this.audio.tone('bell');
+        this.advanceRecruitDetail();
+      } else if (homeAction === 'recruitRevealClose') {
+        this.audio.tone('bell');
+        this.recruitReveal = null;
+        if (this.progression && this.progression.profile.guideStep === 'grow') this.openHeroesHome();
+        else if (this.progression && this.progression.profile.coreReplaceGuidePending) this.openHeroesHome();
+      } else if (homeAction === 'recruitCurrency') {
+        this.audio.tone('bell');
+        this.homeNotice = '请灵符获取途径待接入';
+        this.homeNoticeUntil = this.time + 1.8;
+      } else if (homeAction === 'summonEventOpen') {
+        this.audio.tone('bell');
+        this.openSummonEvent(this.homePage || 'main');
+      } else if (homeAction === 'summonEventClose') {
+        this.audio.tone('bell');
+        this.closeSummonEvent();
+      } else if (homeAction && homeAction.indexOf('summonEventCard:') === 0) {
+        this.audio.tone('bell');
+        this.summonEventSelected = clamp(parseInt(homeAction.slice(16), 10) || 0, 0, YL.HomeUI && YL.HomeUI.summonEventTaskCount ? YL.HomeUI.summonEventTaskCount() - 1 : 21);
+      } else if (homeAction === 'summonEventClaim') {
+        this.audio.tone('bell');
+        var eventIndex = this.summonEventSelected;
+        var eventStatus = YL.HomeUI && YL.HomeUI.summonEventTaskStatus ? YL.HomeUI.summonEventTaskStatus(this, eventIndex) : 'locked';
+        if (eventStatus === 'claimable' && this.progression) {
+          var eventGranted = this.progression.grant('talisman', 10);
+          this.summonEventClaimed[eventIndex] = true;
+          if (!this.progression.profile.summonEventClaimed) this.progression.profile.summonEventClaimed = {};
+          this.progression.profile.summonEventClaimed[eventIndex] = true;
+          this.progression.save();
+          if (eventIndex === 0 && this.progression.profile.guideStep === 'summon-event-claim') this.progression.setGuideStep('summon-event-return');
+          this.summonEventButtonPressedUntil = this.time + .16;
+          this.homeNotice = '领取成功 · 请灵符 ×' + eventGranted;
+          this.homeNoticeUntil = this.time + 2.2;
+        } else if (eventStatus === 'claimed') {
+          this.homeNotice = '该任务奖励已领取';
+          this.homeNoticeUntil = this.time + 1.6;
+        } else {
+          this.homeNotice = '完成任务条件后可领取';
+          this.homeNoticeUntil = this.time + 1.6;
+        }
+      } else if (homeAction === 'taskGuideClaim') {
+        this.audio.tone('bell');
+        var taskReceipt = this.claimTaskGuideReward();
+        if (taskReceipt && taskReceipt.ok) this.audio.playSfx('uiTap') || this.audio.tone('win');
+      } else if (homeAction && homeAction.indexOf('taskGuideGo:') === 0) {
+        this.audio.tone('bell');
+        this.openTaskGuideTask(homeAction.slice(12));
+      } else if (homeAction === 'firstChargeOpen') {
+        this.audio.tone('bell');
+        this.openFirstChargeOffer();
+      } else if (homeAction === 'firstChargeClose') {
+        this.audio.tone('bell');
+        this.firstChargeModal = false;
+      } else if (homeAction && homeAction.indexOf('firstChargePreview:') === 0) {
+        this.audio.tone('bell');
+        this.firstChargePreviewDay = clamp(parseInt(homeAction.slice(19), 10) || 0, 0, 2);
+      } else if (homeAction === 'firstChargePurchase') {
+        this.audio.tone('bell');
+        this.firstChargeButtonPressedUntil = this.time + .16;
+        this.purchaseFirstChargeMock();
+      } else if (homeAction === 'firstChargeClaimDay') {
+        this.audio.tone('bell');
+        this.firstChargeButtonPressedUntil = this.time + .16;
+        this.claimFirstChargeDay();
+      } else if (homeAction === 'locked') {
+        this.audio.tone('bell');
+        this.homeNotice = '暂未开放';
+        this.homeNoticeUntil = this.time + 1.45;
+      }
       return;
     }
     if (this.state === 'formation') {
@@ -796,10 +1215,45 @@
       return;
     }
     if (this.state === 'result') {
-      if (y > 1080 && y < 1205) { this.audio.tone('bell'); this.openFormation(); }
+      if (this.battleResult) {
+        if (x >= 89 && x <= 359 && y >= 1181 && y <= 1272) {
+          this.requestResultAdDouble();
+        } else if (x >= 391 && x <= 661 && y >= 1181 && y <= 1272) {
+          this.audio.playSfx('uiTap') || this.audio.tone('bell');
+          var receipt = this.claimBattleResultRewards();
+          if (this.battleResult.win && this.battleResult.stageId === '1-1') this.openStageHome();
+          else if (this.battleResult.win && this.battleResult.stageId === '1-2') this.openStageHome();
+          // 1-3 后直达三日首充界面；若暂不购买，主线和宗门保留常驻入口。
+          else if (this.battleResult.win && this.battleResult.stageId === '1-3') {
+            this.openStageHome();
+            this.openFirstChargeOffer();
+          }
+          else this.openStageHome();
+          if (receipt) {
+            this.homeNotice = receipt;
+            this.homeNoticeUntil = this.time + 2.4;
+          }
+        }
+      } else if (y > 1080 && y < 1205) {
+        this.audio.tone('bell'); this.openFormation();
+      }
       return;
     }
     if (this.state !== 'battle') return;
+    if (this.isFirstStageTutorialActive() && this.firstStageTutorial.summonAvailable && !this.firstStageTutorial.summoned &&
+      inRect(x, y, this.firstStageTutorialSummonRect())) {
+      this.summonFirstStageTutorialHeroes();
+      return;
+    }
+    if (this.phase === 'eliteDraw') {
+      var eliteDrawState = this.eliteDrawState;
+      if (eliteDrawState && eliteDrawState.t >= ELITE_DRAW_TIMING.revealEnd && inRect(x, y, eliteDrawState.continueRect)) this.closeEliteDraw();
+      return;
+    }
+    if (this.isNubaRescuePauseActive()) {
+      if (inRect(x, y, this.nubaRescue.continueRect)) this.advanceNubaRescueDialogue();
+      return;
+    }
     if (this.infoOverlay === 'talismans') { this.onTalismanDown(x, y); return; }
     if (this.infoOverlay) { this.infoOverlay = null; this.inspectedHeroId = null; return; }
     var huangjinPreviewMode = this.debugHuangjinPreviewControls ? this.huangjinPreviewModeAt(x, y) : null;
@@ -807,8 +1261,22 @@
       this.setHuangjinPreviewMode(huangjinPreviewMode);
       return;
     }
-    if (this.paused) {
-      if (x > 225 && x < 525 && y > 735 && y < 835) this.paused = false;
+    // 技能引导暂停时仍允许点按当前高亮的呼风图标；普通暂停状态继续保持不可操作。
+    if (this.paused && this.isFirstStageTutorialActive() && this.firstStageTutorial.skillUnlocked && !this.firstStageTutorial.skillCast) {
+      var pausedTutorialSpellKey = this.spellKeyAt(x, y);
+      if (pausedTutorialSpellKey && this.phase === 'wave') {
+        this.spellPress = { key: pausedTutorialSpellKey, start: this.time, long: false };
+        return;
+      }
+    }
+    if (this.paused && !this.isSpiritAccessoryTutorialGuidePauseActive()) {
+      if (x > 225 && x < 525 && y > 735 && y < 835) {
+        this.paused = false;
+        this.audio.tone('bell');
+      } else if (x > 225 && x < 525 && y > 845 && y < 937) {
+        this.audio.tone('hurt');
+        this.openStageHome();
+      }
       return;
     }
     if (WALL_MODE && this.phase === 'wave') {
@@ -834,6 +1302,8 @@
       }
     }
     if (this.phase === 'cards') {
+      if (!this.cardEditor.enabled && inRect(x, y, UPGRADE_REWARDED_ACTIONS.refresh)) { this.requestUpgradeRefresh(); return; }
+      if (!this.cardEditor.enabled && inRect(x, y, UPGRADE_REWARDED_ACTIONS.all)) { this.requestUpgradeAll(); return; }
       if (this.onCardEditorDown(x, y)) return;
       if (this.cardEditor.enabled) return;
       for (var ci = 0; ci < this.pendingCards.length; ci++) {
@@ -858,13 +1328,24 @@
     if (action >= 0) {
       if (action === 0) this.paused = true;
       else if (action === 1) this.infoOverlay = 'data';
-      else if (action === 2) this.speed = this.speed >= 3 ? 1 : this.speed + 1;
+      else if (action === 2) {
+        if (!this.speedUnlocked()) {
+          this.message = '通过 1-1 后解锁二倍速';
+          this.messageTime = 2;
+          this.audio.tone('hurt');
+        } else this.cycleBattleSpeed();
+      }
       else if (action === 3) this.openTalismanOverlay();
       return;
     }
     var spellKey = this.spellKeyAt(x, y);
     if (spellKey && this.phase === 'wave') {
       this.spellPress = { key: spellKey, start: this.time, long: false };
+      return;
+    }
+    if (this.battlefieldAimPointAt(x, y)) {
+      this.showProtagonistAimClick(x, y);
+      this.fireProtagonistTalismanAt(x, y);
       return;
     }
     if (this.isDeploymentOpen()) {
@@ -887,8 +1368,17 @@
   };
 
   Game.prototype.onUp = function (x, y) {
+    if (this.state === 'title' && YL.HomeUI && YL.HomeUI.up) {
+      YL.HomeUI.up(this, x, y);
+      return;
+    }
     if (this.state === 'formation') return;
     if (this.state !== 'battle') return;
+    if (this.phase === 'eliteDraw') {
+      this.spellPress = null; this.dragDeploy = null; this.dragSoul = null;
+      this.runePress = null; this.dragRune = null;
+      return;
+    }
     if (this.cardEditor && this.cardEditor.drag) {
       this.cardEditor.drag = null;
       this.saveCardUiTuning();
@@ -1022,8 +1512,14 @@
   };
 
   Game.prototype.autoCastButtonAt = function (x, y) {
-    if (WALL_MODE) return false;
+    if (!this.autoCastUnlocked()) return false;
     return dist2(x, y, AUTO_CAST_BUTTON.x, AUTO_CAST_BUTTON.y) < AUTO_CAST_BUTTON.r * AUTO_CAST_BUTTON.r;
+  };
+
+  Game.prototype.autoCastUnlocked = function () {
+    var stage = this.getSelectedStage && this.getSelectedStage();
+    var step = this.progression && this.progression.profile && this.progression.profile.guideStep;
+    return !!(stage && stage.id === '2-1' && (step === 'chapter-2-preview' || step === 'guide-complete'));
   };
 
   Game.prototype.huangjinPreviewModeAt = function (x, y) {
@@ -1113,12 +1609,22 @@
   };
 
   Game.prototype.spellKeyAt = function (x, y) {
-    for (var i = 0; i < SPELL_KEYS.length; i++) {
-      var key = SPELL_KEYS[i], pos = SPELL_POS[key], meta = SPELL_META[key];
+    if (this.isFirstStageTutorialActive() && !this.firstStageTutorial.skillUnlocked) return null;
+    var visibleSpellKeys = this.visibleProtagonistSpellKeys();
+    for (var i = 0; i < visibleSpellKeys.length; i++) {
+      var key = visibleSpellKeys[i], pos = SPELL_POS[key], meta = SPELL_META[key];
       if (!meta || meta.disabled) continue;
       if (pos && dist2(x, y, pos.x, pos.y) < 36 * 36) return key;
     }
     return null;
+  };
+
+  Game.prototype.visibleProtagonistSpellKeys = function () {
+    if (!WALL_MODE) return SPELL_KEYS.slice();
+    // 1-1 只教学呼风；进入 1-2 后解锁唤雨，并沿用到后续城墙关。
+    var stage = this.getSelectedStage && this.getSelectedStage();
+    if (stage && stage.id !== '1-1') return ['wind', 'rain'];
+    return WALL_VISIBLE_SPELL_KEYS.slice();
   };
 
   Game.prototype.showSpellHelp = function (key, duration) {
@@ -1223,7 +1729,9 @@
   };
 
   Game.prototype.spawnRuneDrop = function (x, y, type) {
-    if (!WALL_MODE) return null;
+    var stage = this.getSelectedStage && this.getSelectedStage();
+    // 1-1 是纯引导关，灵饰从后续关卡开始出现；保留后续关卡的正式掉落逻辑。
+    if (!WALL_MODE || this.isSpiritLineMode() || stage && stage.id === '1-1') return null;
     this.runeDrops = this.runeDrops || [];
     if (this.runeDrops.length >= 3) return null;
     var runeType = type || this.nextRuneType();
@@ -1243,8 +1751,15 @@
     return drop;
   };
 
+  Game.prototype.isSpiritAccessoryTutorialGuidePauseActive = function () {
+    var tutorial = this.spiritAccessoryTutorial;
+    return !!(this.paused && tutorial && (tutorial.phase === 'pickup' || tutorial.phase === 'equip'));
+  };
+
   Game.prototype.shouldOfferWaveRuneDrop = function () {
-    if (!WALL_MODE || this.externalSkillPreview || this.waveRuneDropOffered) return false;
+    var stage = this.getSelectedStage && this.getSelectedStage();
+    if (!WALL_MODE || this.isSpiritLineMode() || stage && stage.id === '1-1' ||
+      this.externalSkillPreview || this.waveRuneDropOffered) return false;
     if (this.wave >= this.waveMax) return false;
     var wave = this.wave || 1;
     return !!WALL_FIXED_RUNE_DROPS[wave];
@@ -1258,8 +1773,12 @@
     this.runeInventory = this.runeInventory || [];
     var uid = 'rune' + (this.idSeed++);
     this.runeInventory.push({ uid: uid, type: drop.type, equippedHeroId: null });
+    if (this.spiritAccessoryTutorial && this.spiritAccessoryTutorial.dropId === drop.id) {
+      this.spiritAccessoryTutorial.phase = 'equip';
+      this.spiritAccessoryTutorial.runeUid = uid;
+    }
     var meta = this.runeType(drop.type);
-    this.message = '获得挂件：' + meta.name + ' · 点击右侧图标查看，拖到御灵头顶装载';
+    this.message = '获得灵饰：' + meta.name + ' · 从右侧灵饰栏拖到御灵头顶装备';
     this.messageTime = 3;
     this.floatText(drop.x, drop.y - 42, meta.name, meta.color, 20, { life: .9, bold: true, rise: 18 });
     this.burst(drop.x, drop.y, meta.color, 22);
@@ -1292,11 +1811,18 @@
     var meta = this.runeType(rune.type);
     this.runeInfoUid = null;
     this.runeInfoTime = 0;
-    this.message = meta.name + ' 已装载给 ' + hero.name + (old && old.uid !== rune.uid ? '，旧挂件已回到栏内' : '');
+    this.message = meta.name + ' 已装备给 ' + hero.name + (old && old.uid !== rune.uid ? '，旧灵饰已回到栏内' : '');
     this.messageTime = 2.4;
     this.floatText(hero.x, hero.y - 126, meta.name, meta.color, 18, { life: .8, bold: true, rise: 16 });
     this.burst(hero.x, hero.y - 58, meta.color, 14);
     this.audio.playSfx('runeEquip') || this.audio.tone('bell');
+    if (this.spiritAccessoryTutorial && this.spiritAccessoryTutorial.runeUid === rune.uid) {
+      this.spiritAccessoryTutorial.phase = 'complete';
+      this.paused = false;
+      if (this.progression && this.progression.completeSpiritAccessoryGuide) this.progression.completeSpiritAccessoryGuide();
+      this.message = '灵饰已生效 · 继续镇魂';
+      this.messageTime = 2.4;
+    }
     return true;
   };
 
@@ -1307,7 +1833,7 @@
     rune.equippedHeroId = null;
     this.runeInfoUid = null;
     this.runeInfoTime = 0;
-    this.message = meta.name + ' 已卸载，保留在挂件栏';
+    this.message = meta.name + ' 已卸载，保留在灵饰栏';
     this.messageTime = 2;
     if (hero) {
       this.floatText(hero.x, hero.y - 120, '卸下 ' + meta.name, meta.color, 16, { life: .75, bold: true, rise: 14 });
@@ -1435,7 +1961,26 @@
     }
   };
 
-  Game.prototype.openFormation = function () {
+  Game.prototype.openFormation = function (mode) {
+    var defaultMode = mode === 'default';
+    // 城墙版的战斗入口仍然保持自动驻守；只有从御灵页进入的“布阵”才打开阵容编辑页。
+    if (WALL_MODE && !defaultMode) {
+      var stage = this.getSelectedStage(), step = this.progression && this.progression.profile.guideStep;
+      var requiredStep = stage && 'stage-' + stage.id;
+      if (step && step.indexOf('stage-') === 0 && step !== requiredStep) {
+        this.homeNotice = '请先完成当前引导';
+        this.homeNoticeUntil = this.time + 1.8;
+        return;
+      }
+      if (step === 'recruit' || step === 'grow' || step === 'star') {
+        this.homeNotice = step === 'recruit' ? '前往请灵台，回应新的御灵' : '先完成御灵养成引导';
+        this.homeNoticeUntil = this.time + 2;
+        return;
+      }
+      this.beginBattle();
+      return;
+    }
+    this.formationMode = defaultMode ? 'default' : 'battle';
     this.state = 'formation';
     this.paused = false;
     this.infoOverlay = null;
@@ -1443,11 +1988,420 @@
     this.dragSoul = null;
     this.dragDeploy = null;
     this.spellPress = null;
-    this.formationSlots = [];
+    this.formationSlots = defaultMode ? this.defaultFormationSlots() : [];
     this.formationSelected = null;
     this.formationMoveFrom = null;
-    this.formationNotice = '点击下方卡牌上阵御灵';
+    this.formationNotice = defaultMode
+      ? (this.formationSlots.length ? '当前默认阵容 · 可调整后保存' : '点击下方卡牌设置默认阵容')
+      : '点击下方卡牌上阵御灵';
     this.formationNoticeTime = 2.2;
+  };
+
+  Game.prototype.defaultFormationSlots = function () {
+    var profile = this.progression && this.progression.profile || {};
+    var saved = Array.isArray(profile.defaultFormation) ? profile.defaultFormation : [];
+    var slots = [], usedTypes = [], usedGrids = [];
+    for (var i = 0; i < saved.length && slots.length < SOUL_SLOTS.length; i++) {
+      var item = saved[i] || {}, type = item.type, gridIndex = Number(item.gridIndex);
+      if (!this.isFormationHeroUnlocked(type) || usedTypes.indexOf(type) >= 0 || !isFinite(gridIndex) || gridIndex < 0 || gridIndex >= FORMATION_GRID.cols || usedGrids.indexOf(gridIndex) >= 0) continue;
+      usedTypes.push(type);
+      usedGrids.push(gridIndex);
+      slots.push({ type: type, gridIndex: Math.floor(gridIndex) });
+    }
+    var roster = this.configuredRoster ? this.configuredRoster() : [];
+    for (var r = 0; r < roster.length && slots.length < SOUL_SLOTS.length; r++) {
+      var rosterType = roster[r];
+      if (!this.isFormationHeroUnlocked(rosterType) || usedTypes.indexOf(rosterType) >= 0) continue;
+      var preferred = WALL_DEFAULT_FORMATION_GRIDS[r];
+      var fallback = usedGrids.indexOf(preferred) >= 0 ? -1 : preferred;
+      if (fallback < 0 || fallback >= FORMATION_GRID.cols) {
+        for (var grid = 0; grid < FORMATION_GRID.cols; grid++) {
+          if (usedGrids.indexOf(grid) < 0) { fallback = grid; break; }
+        }
+      }
+      if (fallback < 0) continue;
+      usedTypes.push(rosterType);
+      usedGrids.push(fallback);
+      slots.push({ type: rosterType, gridIndex: fallback });
+    }
+    return slots;
+  };
+
+  Game.prototype.saveDefaultFormation = function () {
+    if (!this.progression || !this.progression.profile) return;
+    this.progression.profile.defaultFormation = this.formationSlots.slice(0, SOUL_SLOTS.length).map(function (slot) {
+      return { type: slot.type, gridIndex: slot.gridIndex };
+    });
+    this.progression.save();
+    this.setFormationNotice('默认阵容已保存', 2.2);
+    this.audio.tone('win');
+  };
+
+  Game.prototype.openSummonEvent = function (returnPage) {
+    this.state = 'title';
+    this.homePage = 'summonEvent';
+    this.summonEventReturnPage = returnPage === 'sect' ? 'sect' : 'main';
+    this.summonEventSelected = 0;
+    this.summonEventClaimed = this.progression && this.progression.profile && this.progression.profile.summonEventClaimed || {};
+    this.summonEventScroll = 0;
+    this.summonEventDrag = null;
+    this.summonEventReferenceMode = false;
+    this.summonEventButtonPressedUntil = 0;
+    this.firstChargeModal = false;
+    this.sectDrag = null;
+    this.paused = false;
+    this.infoOverlay = null;
+    this.inspectedHeroId = null;
+    this.homeNotice = '';
+    this.homeNoticeUntil = 0;
+    if (this.progression && this.progression.profile.guideStep === 'summon-event-open') this.progression.setGuideStep('summon-event-claim');
+  };
+
+  Game.prototype.closeSummonEvent = function () {
+    var returnPage = this.summonEventReturnPage === 'sect' ? 'sect' : 'main';
+    if (this.progression && this.progression.profile.guideStep === 'summon-event-return') {
+      this.progression.setGuideStep('recruit');
+      returnPage = 'main';
+    }
+    if (returnPage === 'sect') this.openSectHome();
+    else this.openStageHome();
+  };
+
+  Game.prototype.openStageHome = function () {
+    this.state = 'title';
+    this.homePage = 'main';
+    this.sectDrag = null;
+    this.paused = false;
+    this.infoOverlay = null;
+    this.inspectedHeroId = null;
+    this.dragSoul = null;
+    this.dragDeploy = null;
+    this.spellPress = null;
+    this.homeNotice = '';
+    this.homeNoticeUntil = 0;
+  };
+
+  Game.prototype.isFirstStageTutorialBattle = function (formationSlots) {
+    var stage = this.getSelectedStage && this.getSelectedStage();
+    var step = this.progression && this.progression.profile && this.progression.profile.guideStep;
+    return !!(stage && stage.id === '1-1' && step === 'stage-1-1' && (!this.qaMode || this.qaMode === 'first-stage-tutorial') && !this.externalSkillPreview &&
+      (!formationSlots || !formationSlots.length));
+  };
+
+  Game.prototype.shouldStartFirstStageTutorial = function () {
+    return this.isFirstStageTutorialBattle();
+  };
+
+  Game.prototype.isFirstStageTutorialActive = function () {
+    return !!(this.firstStageTutorial && this.firstStageTutorial.active);
+  };
+
+  Game.prototype.isFirstStageTutorialAttackGuideActive = function () {
+    return !!(this.isFirstStageTutorialActive() && this.firstStageTutorial.attackGuideActive &&
+      !this.firstStageTutorial.attackGuideDone);
+  };
+
+  Game.prototype.isFirstStageTutorialGuidePauseActive = function () {
+    var tutorial = this.firstStageTutorial;
+    return !!(this.isFirstStageTutorialAttackGuideActive() ||
+      (this.isFirstStageTutorialActive() && tutorial && tutorial.summonAvailable && !tutorial.summoned) ||
+      (this.isFirstStageTutorialActive() && tutorial && tutorial.skillUnlocked && !tutorial.skillCast));
+  };
+
+  Game.prototype.firstStageTutorialAttackGuideReady = function () {
+    if (!this.isFirstStageTutorialActive() || this.wave !== 1 || this.firstStageTutorial.attackGuideDone ||
+      this.firstStageTutorial.attackGuideActive) return false;
+    for (var i = 0; i < (this.enemies || []).length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead) continue;
+      if (this.wallEnemyHeadY(enemy) >= WALL_TUTORIAL_ATTACK_HEAD_TRIGGER_Y) return true;
+    }
+    return false;
+  };
+
+  Game.prototype.activateFirstStageTutorialAttackGuide = function () {
+    if (!this.firstStageTutorialAttackGuideReady()) return false;
+    this.firstStageTutorial.attackGuideActive = true;
+    this.paused = true;
+    this.message = '';
+    this.messageTime = 0;
+    return true;
+  };
+
+  Game.prototype.registerFirstStageTutorialAttack = function () {
+    var tutorial = this.firstStageTutorial;
+    if (!this.isFirstStageTutorialAttackGuideActive()) return false;
+    // 首次有效点按即完成主角攻击教学：符纸已发射后立即解除遮罩和战场暂停。
+    tutorial.attackGuideClicks = 1;
+    tutorial.attackGuideActive = false;
+    tutorial.attackGuideDone = true;
+    this.paused = false;
+    this.message = '主角攻击已掌握 · 怪潮继续袭来';
+    this.messageTime = 1.8;
+    return true;
+  };
+
+  Game.prototype.firstStageTutorialSummonRect = function () {
+    // 召唤教学点击主角本体：主角绘制使用底部中心锚点，焦点框覆盖完整身形并留出少量边距。
+    var protagonist = BATTLE_LOWER_ART.protagonist;
+    return {
+      x: protagonist.x - protagonist.w * .5 - 24,
+      y: protagonist.y - protagonist.h - 12,
+      w: protagonist.w + 48,
+      h: protagonist.h + 24
+    };
+  };
+
+  Game.prototype.firstStageTutorialSummonGuideReady = function () {
+    var tutorial = this.firstStageTutorial;
+    if (!this.isFirstStageTutorialActive() || !tutorial || this.wave < 2 || !tutorial.attackGuideDone ||
+      tutorial.summoned || tutorial.summonAvailable) return false;
+    for (var i = 0; i < (this.enemies || []).length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead) continue;
+      if (this.wallEnemyFootY(enemy) >= WALL_TUTORIAL_PROGRESS_TRIGGER_Y) return true;
+    }
+    return false;
+  };
+
+  Game.prototype.activateFirstStageTutorialSummonGuide = function () {
+    if (!this.firstStageTutorialSummonGuideReady()) return false;
+    this.firstStageTutorial.summonAvailable = true;
+    this.paused = true;
+    this.message = '';
+    this.messageTime = 0;
+    return true;
+  };
+
+  Game.prototype.firstStageTutorialSkillGuideReady = function () {
+    var tutorial = this.firstStageTutorial;
+    if (!this.isFirstStageTutorialActive() || !tutorial || this.wave < 5 || !tutorial.summoned ||
+      tutorial.skillUnlocked || tutorial.skillCast) return false;
+    for (var i = 0; i < (this.enemies || []).length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead) continue;
+      if (this.wallEnemyFootY(enemy) >= WALL_TUTORIAL_SKILL_PRESSURE_TRIGGER_Y) return true;
+    }
+    return false;
+  };
+
+  Game.prototype.activateFirstStageTutorialSkillGuide = function () {
+    if (!this.firstStageTutorialSkillGuideReady()) return false;
+    this.firstStageTutorial.skillUnlocked = true;
+    this.spiritLampLit = this.spiritLampMax;
+    this.spellCd.wind = 0;
+    this.paused = true;
+    this.message = '';
+    this.messageTime = 0;
+    return true;
+  };
+
+  Game.prototype.firstStageTutorialSpellRect = function (key) {
+    var pos = SPELL_POS[key] || SPELL_POS.wind;
+    return { x: pos.x - 38, y: pos.y - 38, w: 76, h: 76 };
+  };
+
+  Game.prototype.summonFirstStageTutorialHeroes = function () {
+    var tutorial = this.firstStageTutorial;
+    if (!tutorial || tutorial.summoned) return false;
+    for (var i = 0; i < WALL_FIRST_STAGE_STARTER_TYPES.length; i++) {
+      var type = WALL_FIRST_STAGE_STARTER_TYPES[i];
+      var stats = this.configuredHeroStats(type);
+      var slot = clamp(stats.slot == null ? i : stats.slot, 0, WALL_COMBAT_SLOTS.length - 1) | 0;
+      var hero = this.makeHero(type, slot, stats);
+      hero.attackCd = 0;
+      this.heroes.push(hero);
+      this.burst(hero.x, hero.y - 42, HERO_META[type].color, 18);
+    }
+    tutorial.summoned = true;
+    tutorial.summonAvailable = false;
+    this.paused = false;
+    this.refreshUpgradeDerivedStats(false);
+    this.message = '三名初始御灵已入场 · 自动镇守城墙';
+    this.messageTime = 2.6;
+    this.audio.playSfx('summonReveal') || this.audio.tone('bell');
+    return true;
+  };
+
+  Game.prototype.openFirstChargeOffer = function () {
+    var status = this.progression && this.progression.firstChargeStatus && this.progression.firstChargeStatus();
+    if (!status || !status.unlocked) {
+      this.firstChargeModal = false;
+      this.homeNotice = '完成 1-3 后解锁首充礼包';
+      this.homeNoticeUntil = this.time + 1.8;
+      return false;
+    }
+    this.firstChargePreviewDay = status && status.purchased
+      ? Math.min(2, status.claimDay >= 0 ? status.claimDay : status.nextDay)
+      : 0;
+    this.firstChargeModal = true;
+    if (this.progression && !this.progression.profile.firstChargeGuideViewed) {
+      this.progression.markFirstChargeGuideViewed();
+      this.progression.markTaskGuide('first-charge', 1);
+      if (this.progression.profile.guideStep === 'first-charge') {
+        this.progression.setGuideStep('chapter-2-preview');
+        this.selectedStageIndex = 3;
+      }
+    }
+    return true;
+  };
+
+  Game.prototype.openSectHome = function () {
+    this.state = 'title';
+    this.homePage = 'sect';
+    this.sectScroll = YL.HomeUI && YL.HomeUI.sectScrollDefault
+      ? YL.HomeUI.sectScrollDefault()
+      : 1102;
+    this.sectDrag = null;
+    this.paused = false;
+    this.infoOverlay = null;
+    this.inspectedHeroId = null;
+    this.dragSoul = null;
+    this.dragDeploy = null;
+    this.spellPress = null;
+    this.homeNotice = '';
+    this.homeNoticeUntil = 0;
+  };
+
+  Game.prototype.openTaskGuideTask = function (taskId) {
+    if (taskId === 'stage-1-1' || taskId === 'stage-1-2' || taskId === 'stage-1-3') {
+      this.selectedStageIndex = taskId === 'stage-1-1' ? 0 : taskId === 'stage-1-2' ? 1 : 2;
+      this.openStageHome();
+      this.taskGuideChallengeActive = taskId === 'stage-1-2' || taskId === 'stage-1-3' ? taskId : null;
+      return;
+    }
+    if (taskId === 'recruit') {
+      this.openRecruitHome();
+      return;
+    }
+    if (taskId === 'grow' || taskId === 'star') {
+      this.openHeroesHome();
+      return;
+    }
+    if (taskId === 'first-charge') {
+      this.openStageHome();
+      this.openFirstChargeOffer();
+    }
+  };
+
+  Game.prototype.claimTaskGuideReward = function () {
+    var result = this.progression && this.progression.claimTaskGuide();
+    this.homeNotice = result && result.ok
+      ? '任务完成 · ' + result.reward.name + ' ×' + result.granted
+      : result && result.reason || '任务领取失败';
+    this.homeNoticeUntil = this.time + 2.2;
+    return result;
+  };
+
+  // 请灵台当前只交付静态版式与同一入口路由；请灵扣符、保底存档、记录和结果页在后续状态机接入。
+  Game.prototype.openRecruitHome = function (returnPage) {
+    this.state = 'title';
+    this.homePage = 'recruit';
+    this.recruitReturnPage = returnPage === 'heroes' ? 'heroes' : returnPage === 'main' ? 'main' : 'sect';
+    this.sectDrag = null;
+    this.paused = false;
+    this.infoOverlay = null;
+    this.inspectedHeroId = null;
+    this.dragSoul = null;
+    this.dragDeploy = null;
+    this.spellPress = null;
+    this.homeNotice = '';
+    this.homeNoticeUntil = 0;
+    this.recruitReveal = null;
+  };
+
+  // 百灵居是主界面导航的一页；请灵台仍是从宗门或本页按钮进入的独立功能页。
+  Game.prototype.openHeroesHome = function () {
+    this.state = 'title';
+    this.homePage = 'heroes';
+    this.sectDrag = null;
+    this.paused = false;
+    this.infoOverlay = null;
+    this.inspectedHeroId = null;
+    this.heroGrowthTab = null;
+    this.heroSkillTipIndex = null;
+    this.heroSkillDetailTab = null;
+    this.coreReplaceCandidateId = null;
+    this.homeNotice = '';
+    this.homeNoticeUntil = 0;
+  };
+
+  Game.prototype.openHeroDetail = function (type, tab) {
+    if (!this.progression || !this.progression.isOwned(type)) {
+      this.openHeroesHome();
+      return;
+    }
+    this.state = 'title';
+    this.homePage = 'heroDetail';
+    this.selectedHeroId = type;
+    this.heroGrowthTab = tab === 'star' ? 'star' : 'level';
+    this.heroSkillTipIndex = null;
+    this.heroSkillDetailTab = null;
+    this.sectDrag = null;
+    this.paused = false;
+    this.infoOverlay = null;
+    this.inspectedHeroId = null;
+    this.homeNotice = '';
+    this.homeNoticeUntil = 0;
+  };
+
+  Game.prototype.stageList = function () {
+    return YL.STAGE_CONFIG && YL.STAGE_CONFIG.length
+      ? YL.STAGE_CONFIG
+      : [{ id: '1-1', volume: '第一卷·幽野村', name: '纸人夜叩门', recommendedPower: 1000, waves: YL.WAVE_CONFIG || [] }];
+  };
+
+  Game.prototype.stageCount = function () {
+    return this.stageList().length;
+  };
+
+  Game.prototype.getSelectedStage = function () {
+    var stages = this.stageList();
+    this.selectedStageIndex = clamp(this.selectedStageIndex || 0, 0, stages.length - 1);
+    return stages[this.selectedStageIndex];
+  };
+
+  Game.prototype.selectStage = function (delta) {
+    var previous = this.selectedStageIndex || 0;
+    var next = clamp(previous + delta, 0, this.stageCount() - 1);
+    var step = this.progression && this.progression.profile.guideStep || 'stage-1-1';
+    var maxIndex = (step === 'chapter-2-preview' || step === 'guide-complete') ? 3 : (step === 'stage-1-2' ? 1 : (step === 'stage-1-3' || step === 'first-charge' ? 2 : 0));
+    if (next > maxIndex) {
+      this.homeNotice = '完成当前引导后解锁';
+      this.homeNoticeUntil = this.time + 1.6;
+      this.audio.tone('hurt');
+      return;
+    }
+    this.selectedStageIndex = next;
+    if (previous === this.selectedStageIndex) {
+      this.audio.tone('hurt');
+      return;
+    }
+    this.audio.tone('shoot');
+  };
+
+  Game.prototype.battleSpeedPreference = function () {
+    var profile = this.progression && this.progression.profile;
+    return clamp(profile && profile.battleSpeed || 1, 1, 2) | 0;
+  };
+
+  Game.prototype.setBattleSpeed = function (value) {
+    var next = clamp(Number(value) || 1, 1, 2) | 0;
+    this.speed = next;
+    if (this.progression && this.progression.profile) {
+      this.progression.profile.battleSpeed = next;
+      this.progression.save();
+    }
+    return next;
+  };
+
+  Game.prototype.cycleBattleSpeed = function () {
+    return this.setBattleSpeed(this.speed >= 2 ? 1 : 2);
+  };
+
+  Game.prototype.speedUnlocked = function () {
+    var step = this.progression && this.progression.profile && this.progression.profile.guideStep || 'stage-1-1';
+    return step !== 'stage-1-1' && step !== 'recruit' && step !== 'grow';
   };
 
   Game.prototype.formationCardTypes = function () {
@@ -1476,18 +2430,28 @@
   };
 
   Game.prototype.isFormationHeroUnlocked = function (type) {
+    if (this.progression && !this.progression.isOwned(type)) return false;
+    // 默认阵容服务于御灵页的五人编组，不受战斗白名单限制；战斗模式仍沿用原规则。
+    if (this.formationMode === 'default') return true;
     if (!WALL_MODE) return true;
     return this.formationUnlockedHeroTypes().indexOf(type) >= 0;
   };
 
   Game.prototype.formationMaxSlots = function () {
+    if (this.formationMode === 'default') {
+      var ownedCount = 0;
+      for (var i = 0; i < FORMATION_CARD_TYPES.length; i++) {
+        if (this.progression && this.progression.isOwned(FORMATION_CARD_TYPES[i])) ownedCount++;
+      }
+      return Math.min(SOUL_SLOTS.length, Math.max(1, ownedCount));
+    }
     if (!WALL_MODE) return SOUL_SLOTS.length;
     return Math.min(SOUL_SLOTS.length, Math.max(1, this.formationUnlockedHeroTypes().length));
   };
 
   Game.prototype.formationCardRect = function (index) {
     var count = this.formationCardTypes().length;
-    var w = count > 4 ? 128 : 150, gap = count > 4 ? 10 : 18;
+    var w = count > 5 ? 112 : (count > 4 ? 128 : 150), gap = count > 5 ? 6 : (count > 4 ? 10 : 18);
     var total = count * w + (count - 1) * gap;
     return { x: (W - total) / 2 + index * (w + gap), y: 874, w: w, h: 230 };
   };
@@ -1501,6 +2465,13 @@
   Game.prototype.formationCellCenter = function (index) {
     var rect = this.formationCellRect(index);
     return { x: rect.x + rect.w / 2, y: rect.y + rect.h * .74 };
+  };
+
+  // 女魃原始立绘的透明留白比其他御灵更宽；返回布阵页相对原始 sprite 的等效显示缩放倍数。
+  Game.prototype.formationPortraitScale = function (type, deployed) {
+    var crop = FORMATION_HERO_SOURCE_CROPS[type];
+    if (crop) return deployed ? 1.82 : 1.42;
+    return deployed ? 1 : .78;
   };
 
   Game.prototype.formationGridIndexAt = function (x, y) {
@@ -1579,6 +2550,12 @@
   };
 
   Game.prototype.onFormationDown = function (x, y) {
+    if (inRect(x, y, FORMATION_BACK)) {
+      this.audio.tone('bell');
+      if (this.formationMode === 'default') this.openHeroesHome();
+      else this.openStageHome();
+      return;
+    }
     var cardTypes = this.formationCardTypes();
     for (var i = 0; i < cardTypes.length; i++) {
       if (inRect(x, y, this.formationCardRect(i))) {
@@ -1631,6 +2608,10 @@
       return;
     }
     if (inRect(x, y, FORMATION_START)) {
+      if (this.formationMode === 'default') {
+        this.saveDefaultFormation();
+        return;
+      }
       if (!this.formationSlots.length) {
         this.setFormationNotice('至少选择 1 名御灵才能开阵', 2);
         this.audio.tone('hurt');
@@ -1641,23 +2622,304 @@
     }
   };
 
-  Game.prototype.configuredHeroStats = function (type) {
+  Game.prototype.baseConfiguredHeroStats = function (type) {
     var base = DEFAULT_HERO_STATS[type] || {}, tune = battleTuning().hero || {};
     var custom = tune.stats && tune.stats[type] || {};
     var stats = {}, k;
     for (k in base) stats[k] = base[k];
     for (k in custom) stats[k] = custom[k];
+    // 城墙版御灵不承受敌方伤害，固定保留一项可读的输出属性：
+    // 所有御灵默认 5% 暴击率，暴击伤害为 150%。后续可由单角色配置覆写。
+    stats.critRate = stats.critRate == null ? .05 : clamp(Number(stats.critRate) || 0, 0, .95);
+    stats.critMultiplier = stats.critMultiplier == null ? 1.5 : Math.max(1, Number(stats.critMultiplier) || 1.5);
     return stats;
+  };
+
+  Game.prototype.applyPermanentGrowth = function (type, stats) {
+    if (!this.progression) return stats;
+    var state = this.progression.getHero(type);
+    if (!state) return stats;
+    var multiplier = this.progression.statMultiplier(type);
+    // 只放大持久的生命和伤害；攻速、暴击与技能 CD 保持角色基础节奏。
+    if (stats.hp != null) stats.hp = Math.max(1, Math.round(stats.hp * multiplier));
+    if (stats.damage != null) stats.damage = Math.max(1, Math.round(stats.damage * multiplier));
+    stats.star = state.star;
+    stats.starLevel = state.star;
+    stats.growthLevel = this.progression.effectiveLevel(type);
+    return stats;
+  };
+
+  Game.prototype.configuredHeroStats = function (type) {
+    return this.applyPermanentGrowth(type, this.baseConfiguredHeroStats(type));
+  };
+
+  Game.prototype.heroGrowthView = function (type) {
+    var progression = this.progression;
+    var def = progression && progression.getHeroDef(type);
+    var state = progression && progression.getHero(type);
+    if (!def || !state) return null;
+    var stats = this.configuredHeroStats(type);
+    var seedUsage = progression.spiritSeedUsage(type);
+    var starCost = progression.starRequirementForHero(type);
+    return {
+      def: def,
+      state: state,
+      isCore: progression.isCore(type),
+      level: progression.effectiveLevel(type),
+      resonanceLevel: progression.resonanceLevel(),
+      stats: stats,
+      skillLevels: progression.skillLevels(type),
+      starSkillNodes: progression.starSkillNodes(state.star),
+      starStage: progression.starStage(state.star),
+      spiritSeedFaction: seedUsage.seedId,
+      spiritSeedFactionName: seedUsage.seedName,
+      spiritSeedBalance: seedUsage.usableBalance,
+      spiritSeedSpecificBalance: seedUsage.specificBalance,
+      spiritSeedUniversalBalance: seedUsage.universalBalance,
+      spiritSeedUsableBalance: seedUsage.usableBalance,
+      nextStarMultiplier: state.star < YL.GROWTH_MAX_STAR ? progression.statMultiplierAtStar(type, state.star + 1) : progression.statMultiplier(type),
+      nextLevelCost: progression.levelCost(state.level),
+      nextStarCost: starCost,
+      maxLevel: YL.GROWTH_MAX_LEVEL,
+      maxStar: YL.GROWTH_MAX_STAR
+    };
+  };
+
+  Game.prototype.tryHeroLevelUpgrade = function (type) {
+    var result = this.progression && this.progression.tryUpgradeLevel(type);
+    if (result && result.ok) this.progression.markTaskGuide('grow', 1);
+    if (result && result.ok && this.progression.profile.guideStep === 'grow') {
+      this.progression.setGuideStep('stage-1-2');
+      this.selectedStageIndex = 1;
+    }
+    this.homeNotice = result && result.ok ? '灵蕴升级成功' : result && result.reason || '升级失败';
+    this.homeNoticeUntil = this.time + 1.8;
+    return result;
+  };
+
+  Game.prototype.tryHeroStarUpgrade = function (type) {
+    var result = this.progression && this.progression.tryUpgradeStar(type);
+    if (result && result.ok) this.progression.markTaskGuide('star', 1);
+    if (result && result.ok && this.progression.profile.guideStep === 'star') {
+      this.progression.setGuideStep('stage-1-3');
+      this.selectedStageIndex = 2;
+    }
+    this.homeNotice = result && result.ok ? '显灵升星成功' : result && result.reason || '升星失败';
+    this.homeNoticeUntil = this.time + 1.8;
+    return result;
+  };
+
+  // 招募演出状态只服务于当前一次结果，不写入存档；拥有、灵契和保底仍由 Progression 先完成结算。
+  Game.prototype.isNewPurpleRecruitReward = function (reward) {
+    if (!reward || reward.kind === 'spiritSeed') return false;
+    var def = reward && YL.GROWTH_HERO_DEFS && YL.GROWTH_HERO_DEFS[reward.id];
+    return !!(reward && reward.newlyOwned && def && Number(def.qualityTier) >= 2);
+  };
+
+  Game.prototype.initializeRecruitReveal = function (result, count) {
+    var i, single = count === 1;
+    result.revealed = [];
+    result.revealAt = [];
+    result.detailQueue = [];
+    result.detailCursor = 0;
+    result.activeDetail = -1;
+    result.detailReadyAt = 0;
+    for (i = 0; i < result.rewards.length; i++) {
+      result.revealed.push(single);
+      result.revealAt.push(single ? this.time : null);
+      if (single && this.isNewPurpleRecruitReward(result.rewards[i])) result.detailQueue.push(i);
+    }
+    if (result.detailQueue.length) result.detailReadyAt = this.time + .42;
+    return result;
+  };
+
+  Game.prototype.queueRecruitDetail = function (index, delay) {
+    var reveal = this.recruitReveal;
+    if (!reveal || !reveal.rewards || !this.isNewPurpleRecruitReward(reveal.rewards[index])) return false;
+    if (!Array.isArray(reveal.detailQueue)) reveal.detailQueue = [];
+    if (reveal.detailQueue.indexOf(index) >= 0) return false;
+    reveal.detailQueue.push(index);
+    if (reveal.activeDetail == null || reveal.activeDetail < 0) {
+      reveal.detailReadyAt = Math.max(reveal.detailReadyAt || 0, this.time + (delay == null ? .36 : delay));
+    }
+    return true;
+  };
+
+  Game.prototype.revealRecruitCard = function (index) {
+    var reveal = this.recruitReveal;
+    if (!reveal || reveal.activeDetail >= 0 || !reveal.rewards || index < 0 || index >= reveal.rewards.length || reveal.revealed[index]) return false;
+    reveal.revealed[index] = true;
+    reveal.revealAt[index] = this.time;
+    this.queueRecruitDetail(index, .38);
+    return true;
+  };
+
+  Game.prototype.revealAllRecruitCards = function () {
+    var reveal = this.recruitReveal;
+    if (!reveal || reveal.activeDetail >= 0 || !reveal.rewards) return false;
+    var changed = false, i;
+    for (i = 0; i < reveal.rewards.length; i++) {
+      if (!reveal.revealed[i]) {
+        reveal.revealed[i] = true;
+        // 仅做 0~75ms 的视觉错峰，输入与结果在同一次点击中同时完成。
+        reveal.revealAt[i] = this.time + (i % 4) * .025;
+        changed = true;
+      }
+      this.queueRecruitDetail(i, .56);
+    }
+    if (changed && reveal.detailQueue.length && reveal.activeDetail < 0) reveal.detailReadyAt = this.time + .56;
+    return changed;
+  };
+
+  // 首次获得的稀有御灵会自动展示；已拥有的上品/绝品则在结算完成后允许点正面卡复看详情。
+  Game.prototype.previewRecruitDetail = function (index) {
+    var reveal = this.recruitReveal;
+    if (!reveal || reveal.activeDetail >= 0 || !reveal.rewards || !reveal.revealed[index]) return false;
+    var reward = reveal.rewards[index];
+    if (!reward || reward.kind === 'spiritSeed') return false;
+    var def = YL.GROWTH_HERO_DEFS && YL.GROWTH_HERO_DEFS[reward.id];
+    if (!def || Number(def.qualityTier) < 2) return false;
+    for (var i = 0; i < reveal.revealed.length; i++) if (!reveal.revealed[i]) return false;
+    if ((reveal.detailCursor || 0) < (reveal.detailQueue || []).length) return false;
+    reveal.previewDetail = true;
+    reveal.activeDetail = index;
+    return true;
+  };
+
+  Game.prototype.updateRecruitReveal = function () {
+    var reveal = this.recruitReveal;
+    if (!reveal || reveal.activeDetail >= 0 || !reveal.detailQueue || reveal.detailCursor >= reveal.detailQueue.length) return;
+    if (this.time >= (reveal.detailReadyAt || 0)) reveal.activeDetail = reveal.detailQueue[reveal.detailCursor];
+  };
+
+  Game.prototype.advanceRecruitDetail = function () {
+    var reveal = this.recruitReveal;
+    if (!reveal || reveal.activeDetail < 0) return false;
+    if (reveal.previewDetail) {
+      reveal.previewDetail = false;
+      reveal.activeDetail = -1;
+      return true;
+    }
+    reveal.activeDetail = -1;
+    reveal.detailCursor++;
+    if (reveal.detailCursor < reveal.detailQueue.length) reveal.detailReadyAt = this.time + .14;
+    return true;
+  };
+
+  Game.prototype.tryRecruit = function (count) {
+    var result = this.progression && this.progression.tryRecruit(count);
+    if (!result || !result.ok) {
+      this.homeNotice = result && result.reason || '请灵失败';
+      this.homeNoticeUntil = this.time + 1.8;
+      return result;
+    }
+    this.recruitReveal = this.initializeRecruitReveal(result, count === 10 ? 10 : 1);
+    if (this.progression.profile.guideStep === 'recruit') this.progression.setGuideStep('grow');
+    this.homeNotice = result.spiritSeedGain ? '请灵完成：角色与灵种奖励已结算' : '请灵完成：角色与灵契已结算';
+    this.homeNoticeUntil = this.time + 2;
+    return result;
+  };
+
+  Game.prototype.purchaseFirstChargeMock = function () {
+    var result = this.progression && this.progression.purchaseFirstChargeMock();
+    // Demo 点击仅模拟支付成功后的领取；真实微信支付接入后从支付回调进入同一条链路。
+    if (result && result.ok) {
+      this.firstChargeModal = false;
+      this.openStageHome();
+    }
+    this.homeNotice = result && result.ok ? '首日奖励已领取：' + result.reward.label : result && result.reason || '领取失败';
+    this.homeNoticeUntil = this.time + 2;
+    return result;
+  };
+
+  Game.prototype.claimFirstChargeDay = function () {
+    var result = this.progression && this.progression.claimFirstChargeDay();
+    if (result && result.ok) this.firstChargeModal = false;
+    this.homeNotice = result && result.ok ? '第 ' + (result.dayIndex + 1) + ' 日奖励已领取：' + result.reward.label : result && result.reason || '领取失败';
+    this.homeNoticeUntil = this.time + 2;
+    return result;
+  };
+
+  // 保留旧 QA/调用点的兼容别名。
+  Game.prototype.claimFirstChargeMock = function () {
+    return this.purchaseFirstChargeMock();
+  };
+
+  Game.prototype.claimBattleResultRewards = function () {
+    var result = this.battleResult;
+    if (!result || result.rewardsClaimed || !this.progression) return '';
+    var doubled = result.adMultiplierState === 'claimed';
+    var summary = [], i;
+    for (i = 0; i < result.rewards.length; i++) {
+      var reward = result.rewards[i];
+      var amount = reward.amount * (doubled && reward.doubleEligible ? 2 : 1);
+      this.progression.grant(reward.id, amount, reward.faction);
+      summary.push((reward.name || reward.id) + ' +' + amount);
+    }
+    result.rewardsClaimed = true;
+    if (result.win && this.progression) {
+      this.progression.markStageCompleted(result.stageId);
+      this.progression.markTaskGuide('stage-' + result.stageId, 1);
+      if (result.stageId === '1-1') this.progression.setGuideStep('summon-event-open');
+      else if (result.stageId === '1-2') {
+        this.selectedStageIndex = 2;
+        this.progression.setGuideStep('stage-1-3');
+      }
+      else if (result.stageId === '1-3') {
+        this.progression.profile.firstNubaRescueComplete = true;
+        this.selectedStageIndex = 3;
+        this.progression.setGuideStep('first-charge');
+      }
+    }
+    return summary.length ? '已获得 ' + summary.join('  ') : '';
   };
 
   Game.prototype.configuredRoster = function () {
     var tune = battleTuning().hero || {};
     var roster = tune.roster && tune.roster.length ? tune.roster.slice() : ['huangjin'];
-    var result = [];
+    var result = [], type;
     for (var i = 0; i < roster.length && result.length < SOUL_SLOTS.length; i++) {
-      if (HERO_META[roster[i]]) result.push(roster[i]);
+      if (HERO_META[roster[i]] && (!this.progression || this.progression.isOwned(roster[i]))) result.push(roster[i]);
+    }
+    // 请灵/首充获得的御灵不需要“上阵”：自动进入城墙守备名单。
+    for (i = 0; i < WALL_HERO_ORDER.length && result.length < SOUL_SLOTS.length; i++) {
+      type = WALL_HERO_ORDER[i];
+      if (HERO_META[type] && result.indexOf(type) < 0 && (!this.progression || this.progression.isOwned(type))) result.push(type);
     }
     return result.length ? result : ['huangjin'];
+  };
+
+  Game.prototype.isSpiritLineMode = function () {
+    var stage = this.getSelectedStage && this.getSelectedStage();
+    return !!(WALL_MODE && stage && stage.battleMode === 'spirit-line-v2');
+  };
+
+  Game.prototype.spiritLineXpTuning = function () {
+    var stage = this.getSelectedStage && this.getSelectedStage();
+    var config = stage && stage.xpProgression || {};
+    var firstNeed = Math.max(1, valueOr(config.firstNeed, 64));
+    return {
+      firstNeed: firstNeed,
+      growth: Math.max(1.05, valueOr(config.growth, 1.52)),
+      maxNeed: Math.max(firstNeed, valueOr(config.maxNeed, 720))
+    };
+  };
+
+  Game.prototype.isStaticWallMode = function () {
+    return !!(WALL_MODE && !this.isSpiritLineMode());
+  };
+
+  Game.prototype.spiritLineHome = function (hero) {
+    return hero && hero.lineHome ? hero.lineHome : this.heroSoulAnchor(hero);
+  };
+
+  Game.prototype.spiritLineSectorForX = function (x) {
+    return clamp(Math.floor((x / Math.max(1, W)) * SPIRIT_LINE_HOME_SLOTS.length), 0, SPIRIT_LINE_HOME_SLOTS.length - 1) | 0;
+  };
+
+  Game.prototype.isSpiritLineHeroUnlocked = function (type) {
+    var hero = this.heroByType(type);
+    return !!(hero && hero.lineUnlocked);
   };
 
   Game.prototype.configuredHeroGridIndex = function (stats, slot) {
@@ -1689,6 +2951,8 @@
       baseUltimateMax: stats.ultimate, baseProjectileSpeed: stats.projectile == null ? (attack.projectileSpeed || 0) : stats.projectile,
       block: stats.block, search: stats.search, attackRange: stats.range == null ? attack.range : stats.range,
       moveSpeed: stats.move, damage: stats.damage,
+      critRate: stats.critRate == null ? .05 : stats.critRate,
+      critMultiplier: stats.critMultiplier == null ? 1.5 : stats.critMultiplier,
       attackInterval: stats.attackInterval || attack.interval || 1,
       attackMultiplier: stats.attackMultiplier == null ? (attack.multiplier == null ? 1 : attack.multiplier) : stats.attackMultiplier,
       attackType: attackType, attackFacing: 1,
@@ -1706,6 +2970,11 @@
       holyShieldTime: 0, holyShield: 0,
       hongyiSigils: 0, hongyiBurnSigilTicks: 0, hongyiLotusFlash: 0,
       hongyiBurnSigilCooldown: 0,
+      nubaCastTime: 0, nubaCastDuration: 0, nubaSigil: null, nubaResonanceFlash: 0,
+      spiritLineV2: false,
+      spiritLineVolley: 0, spiritLineLanceFlash: 0,
+      spiritLineShieldTime: 0, spiritLineShieldBurstReady: false,
+      spiritLineXuanyaEmpoweredTime: 0, spiritLineXuanyaEmpoweredFlash: 0,
       xuanyaSoulStacks: 0, xuanyaEmpoweredBlade: 0, xuanyaSoulLastGainTime: -999,
       suwenFocusTarget: null, suwenFocusCount: 0, suwenFocusReady: 0,
       suwenFocusRetain: 0, suwenStoredFocusCount: 0, suwenStoredFocusTarget: null,
@@ -1714,7 +2983,41 @@
       scale: stats.scale || .72, blocked: [], damageDone: 0, healingDone: 0,
       blockedTotal: 0, deaths: 0, upgrades: { attack: 0, passive: 0, ultimate: 0 }
     };
-    if (WALL_MODE) {
+    if (this.isSpiritLineMode()) {
+      var lineSlot = clamp(slot || 0, 0, SPIRIT_LINE_HOME_SLOTS.length - 1) | 0;
+      var lineHome = SPIRIT_LINE_HOME_SLOTS[lineSlot];
+      var lineStarter = SPIRIT_LINE_STARTER_TYPES.indexOf(type) >= 0;
+      var spiritLineV2 = SPIRIT_LINE_V2_HERO_CONFIG[type] || null;
+      hero.lineSlot = lineSlot;
+      hero.lineHome = { x: lineHome.x, y: lineHome.y };
+      hero.lineUnlocked = lineStarter;
+      hero.lineLocked = !lineStarter;
+      hero.x = lineHome.x;
+      hero.y = lineHome.y;
+      hero.scale = (spiritLineV2 && spiritLineV2.scale) || (WALL_HERO_STYLE[type] || { scale: hero.scale }).scale;
+      // 新版三英雄只在本原型内覆盖：黄巾顶线、玄鸦近战收割、红衣后方输出。
+      hero.spiritLineV2 = !!spiritLineV2;
+      if (spiritLineV2) {
+        hero.attackType = spiritLineV2.attackType;
+        hero.attackRange = spiritLineV2.attackRange;
+        hero.search = spiritLineV2.search;
+        hero.attackMultiplier = spiritLineV2.multiplier;
+        hero.baseAttackInterval = hero.attackInterval = 1 / spiritLineV2.attackSpeed;
+        hero.attackWindupDuration = spiritLineV2.windup;
+        hero.baseUltimateMax = hero.ultimateMax = hero.ultimateCd = hero.ultimatePrevCd = spiritLineV2.ultimate;
+        hero.block = hero.baseBlock = spiritLineV2.block;
+      } else {
+        hero.block = hero.baseBlock = type === 'huangjin' ? 2 : 1;
+        hero.search = Math.max(100, stats.search || hero.attackRange || 240);
+        hero.attackRange = Math.max(90, stats.range == null ? hero.attackRange : stats.range);
+      }
+      hero.moveSpeed = Math.max(52, stats.move || hero.moveSpeed || 58);
+      hero.respawnMax = 15;
+      hero.alive = lineStarter;
+      hero.hp = lineStarter ? hero.maxHp : 0;
+      hero.respawn = 0;
+      hero.invuln = lineStarter ? 1.2 : 0;
+    } else if (WALL_MODE) {
       var wallPlacement = wallHeroPlacement(type, slot);
       hero.anchorIndex = 10 + clamp(slot, 0, 4);
       hero.soulAnchorIndex = hero.anchorIndex;
@@ -1738,26 +3041,52 @@
 
   Game.prototype.beginBattle = function (formationSlots) {
     this.state = 'battle'; this.phase = 'wave'; this.paused = false; this.infoOverlay = null; this.inspectedHeroId = null;
-    this.wave = 1; this.waveMax = YL.WAVE_CONFIG && YL.WAVE_CONFIG.length ? YL.WAVE_CONFIG.length : 20; this.speed = 1; this.gameTime = 0;
+    this.battleResult = null;
+    this.resultNotice = '';
+    this.resultNoticeUntil = 0;
+    var selectedStage = this.getSelectedStage();
+    this.firstStageTutorial = this.isFirstStageTutorialBattle(formationSlots)
+      ? { active: true, summoned: false, summonAvailable: false, skillUnlocked: false, skillCast: false,
+        attackGuideActive: false, attackGuideClicks: 0, attackGuideDone: false }
+      : null;
+    this.stageWaveConfig = selectedStage.waves && selectedStage.waves.length ? selectedStage.waves : (YL.WAVE_CONFIG || []);
+    // 仅本机 QA：仍调用同一套 beginBattle / updateBattle / endBattle，
+    // 只是把关卡波次截为首波，避免为了验证结算页重复跑十波。
+    if (this.qaMode === 'one-wave') this.stageWaveConfig = this.stageWaveConfig.slice(0, 1);
+    this.wave = 1; this.waveMax = this.stageWaveConfig.length || 20; this.speed = this.battleSpeedPreference(); this.gameTime = 0;
     this.baseMax = 1000; this.baseHp = this.baseMax; this.score = 0; this.coins = 0;
     this.wallShield = 0; this.wallShieldFlash = 0;
     this.kills = 0; this.totalDamage = 0; this.totalHealing = 0; this.idSeed = 1;
-    this.level = 1; this.xp = 0; this.xpNeed = 1; this.pendingLevels = 0; this.upgradeCount = 0;
+    this.level = 1; this.xp = 0;
+    this.spiritLineXp = this.spiritLineXpTuning();
+    this.xpNeed = this.isSpiritLineMode() ? this.spiritLineXp.firstNeed : 1;
+    this.pendingLevels = 0; this.upgradeCount = 0;
     this.rogueLevels = {}; this.upgradeAcquireOrder = []; this.waveReviveUsed = false; this.baseBaseMax = 1000;
     this.talismanHeroId = null; this.talismanScroll = 0; this.talismanOverlayWasPaused = false;
     this.runeDrops = []; this.runeInventory = []; this.runePress = null; this.dragRune = null;
     this.runeInfoUid = null; this.runeInfoTime = 0; this.runeDropCounter = 0; this.waveRuneDropOffered = false;
+    this.spiritAccessoryTutorial = selectedStage && selectedStage.id === '1-2' && this.progression && !this.progression.profile.spiritAccessoryGuideComplete
+      ? { phase: 'waiting', dropId: null, runeUid: null }
+      : null;
+    this.nubaRescue = selectedStage && selectedStage.id === '1-3' && this.progression && !this.progression.profile.firstNubaRescueComplete
+      ? { active: false, complete: false, dialogueIndex: -1, threatEnemyId: null, heroId: null,
+        continueRect: { x: 176, y: 1088, w: 398, h: 72 } }
+      : null;
     this.spellDiscountWave = 0; this.killHealCounter = 0;
     this.nextWaveShowcase = null; this.activeWaveShowcase = null;
     this.waveKills = 0; this.waveProgress = 0; this.waveProgressFlash = 0;
     this.enemies = []; this.projectiles = []; this.particles = []; this.floaters = []; this.zones = [];
     this.pendingCards = []; this.waveQueue = []; this.intermission = 0;
+    this.upgradeAdRefreshUsed = false; this.upgradeAdAllUsed = false; this.rewardedVideoBusy = null;
+    this.eliteDrawOffers = 0; this.eliteDrawQueue = []; this.eliteDrawState = null;
     this.skillVignette = null;
-    this.waveBanner = 2.2; this.messageTime = 5; this.message = WALL_MODE ? '御灵登城 · 自动迎敌' : '布阵完成 · 魂位已锁定';
+    this.waveBanner = 2.2;
+    this.message = this.isSpiritLineMode() ? '阵主镇守后方 · 击败诡物获得灵识' : (WALL_MODE ? '' : '布阵完成 · 魂位已锁定');
+    this.messageTime = WALL_MODE && !this.isSpiritLineMode() ? 0 : 5;
     var lampTune = spiritLampTuning();
     this.spiritLampMax = valueOr(lampTune.max, SPIRIT_LAMP_MAX);
-    this.spiritLampInterval = valueOr(lampTune.interval, 5);
-    this.spiritLampLit = clamp(valueOr(lampTune.initial, 1), 0, this.spiritLampMax) | 0;
+    this.spiritLampInterval = valueOr(lampTune.interval, SPIRIT_LAMP_INTERVAL);
+    this.spiritLampLit = this.firstStageTutorial ? 0 : clamp(valueOr(lampTune.initial, 1), 0, this.spiritLampMax) | 0;
     this.spiritLampTimer = 0; this.spiritLampPulse = 0; this.spiritLampHit = 0;
     this.spellCd = { wind: 0, rain: 0, empty: 0 };
     this.spellMax = {
@@ -1767,11 +3096,21 @@
     };
     this.spellDamage = { wind: 0, rain: 0, empty: 0 };
     this.protagonistRainTime = 0; this.protagonistRainMax = 0;
-    this.spellAuto = false; this.spellPress = null; this.spellHelpKey = null; this.spellHelpTime = 0;
+    // 1-2 的阵主是稳定连射的重符炮台：比御灵更连续，但不以密集弹幕抢走角色技能焦点。
+    this.protagonistAttackCd = this.isSpiritLineMode() ? 1.05 : 0;
+    this.protagonistManualAttackCd = 0;
+    this.protagonistAttackFlash = 0;
+    this.protagonistAttackCount = 0;
+    this.protagonistCastTime = 0;
+    this.protagonistCastMax = 0;
+    this.protagonistDamageLevel = 0;
+    this.protagonistRateLevel = 0;
+    this.protagonistPierceLevel = 0;
+    this.spellAuto = this.autoCastUnlocked(); this.spellPress = null; this.spellHelpKey = null; this.spellHelpTime = 0;
     this.heroes = [];
     var layout = formationSlots && formationSlots.length ? formationSlots.slice(0, SOUL_SLOTS.length) : null;
     if (layout) layout.sort(function (a, b) { return a.gridIndex - b.gridIndex; });
-    var roster = layout || this.configuredRoster().map(function (type) { return { type: type, gridIndex: null }; });
+    var roster = this.firstStageTutorial ? [] : (layout || this.configuredRoster().map(function (type) { return { type: type, gridIndex: null }; }));
     for (var r = 0; r < roster.length; r++) {
       var type = roster[r].type || roster[r], stats = this.configuredHeroStats(type);
       if (roster[r].gridIndex != null) stats.gridIndex = clamp(roster[r].gridIndex | 0, 0, ANCHORS.length - 1);
@@ -1784,6 +3123,122 @@
     }
     this.refreshUpgradeDerivedStats(true);
     this.startWave(1);
+    if (selectedStage && selectedStage.id === '1-2') {
+      // 二倍速由 TutorialUI 的弱引导手指提示承载；不再叠加底部文字，确保“只有手指点击”。
+      this.message = '';
+      this.messageTime = 0;
+    }
+    // 守备原型不在开局发牌；阵主先独自清理首批诡物，灵识升级后再出现召来/强化选择。
+  };
+
+  Game.prototype.isNubaRescuePauseActive = function () {
+    return !!(this.paused && this.nubaRescue && this.nubaRescue.active && !this.nubaRescue.complete);
+  };
+
+  Game.prototype.activateNubaRescue = function () {
+    var rescue = this.nubaRescue;
+    if (!rescue || rescue.active || rescue.complete || this.wave < this.waveMax) return false;
+    var threat = this.getEnemy(rescue.threatEnemyId);
+    if (!threat || threat.dead) return false;
+    var realPressure = this.wallEnemyFootY(threat) >= 720 || this.baseHp <= this.baseMax * .65;
+    if (!realPressure) return false;
+    threat.hp = Math.max(threat.hp, threat.maxHp * .22);
+    var stats = this.configuredHeroStats('nuba');
+    stats.star = 15; stats.starLevel = 15;
+    stats.damage = Math.max(stats.damage || 1, 220);
+    var hero = this.makeHero('nuba', 4, stats);
+    hero.starLevel = 15;
+    hero.assist = true;
+    hero.temporary = true;
+    hero.rescueAssist = true;
+    hero.name = '女魃·助战';
+    hero.ultimateUnlocked = true;
+    hero.ultimateCd = 0;
+    this.heroes.push(hero);
+    rescue.heroId = hero.id;
+    rescue.active = true;
+    rescue.dialogueIndex = 0;
+    this.rogueLevels.N01 = 3;
+    this.rogueLevels.N02 = 3;
+    this.rogueLevels.N03 = 3;
+    this.rogueLevels.N04 = 3;
+    this.refreshUpgradeDerivedStats(false);
+    this.paused = true;
+    this.audio.playSfx('summonReveal') || this.audio.tone('bell');
+    return true;
+  };
+
+  Game.prototype.advanceNubaRescueDialogue = function () {
+    var rescue = this.nubaRescue;
+    if (!rescue || !rescue.active || rescue.complete) return false;
+    if (rescue.dialogueIndex < 1) {
+      rescue.dialogueIndex++;
+      this.audio.tone('bell');
+      return true;
+    }
+    rescue.complete = true;
+    rescue.active = false;
+    this.paused = false;
+    var hero = this.getHero(rescue.heroId);
+    if (hero) {
+      hero.ultimateUnlocked = true;
+      hero.ultimateCd = 0;
+      this.castWallHeroUltimate(hero);
+    }
+    this.message = '女魃以满级试用强化助战 · 本局结束后不保留';
+    this.messageTime = 4;
+    return true;
+  };
+
+  Game.prototype.drawNubaRescueDialogue = function (ctx) {
+    var rescue = this.nubaRescue;
+    if (!rescue || !rescue.active || rescue.complete) return;
+    var line = rescue.dialogueIndex === 0
+      ? '女魃：呵呵，这就顶不住了吗？'
+      : '女魃：退后些，莫要把你伤着了';
+    ctx.save();
+    ctx.fillStyle = 'rgba(2,8,13,.64)'; ctx.fillRect(0, 0, W, H);
+    A.rr(ctx, 54, 904, 642, 282, 24, 'rgba(16,29,31,.98)', '#d7c38a', 3);
+    A.text(ctx, '剧情助战 · 不占建木灵位', W / 2, 947, 21, '#d7c38a', 'center', '900');
+    A.text(ctx, line, W / 2, 1016, 22, '#fff0c7', 'center', '900');
+    A.rr(ctx, rescue.continueRect.x, rescue.continueRect.y, rescue.continueRect.w, rescue.continueRect.h, 18, '#7a5530', '#f2d28b', 2.5);
+    A.text(ctx, rescue.dialogueIndex === 0 ? '继续' : '应战', W / 2, rescue.continueRect.y + rescue.continueRect.h / 2, 25, '#fff4d0', 'center', '900');
+    ctx.restore();
+  };
+
+  // 仅由 localhost 的 ?qa=result-win / ?qa=result-failure 触发：这是版式/点击夹具，
+  // 不替代真实战斗数据验收；真实数据由 ?qa=one-wave 走 endBattle() 生成。
+  Game.prototype.openQaResultPreview = function (win) {
+    if (win == null) win = true;
+    var layout = [
+      { type: 'huangjin', gridIndex: 1 },
+      { type: 'hongyi', gridIndex: 2 },
+      { type: 'xuanya', gridIndex: 3 }
+    ];
+    this.beginBattle(layout);
+    var fixtureDamage = [36780, 28960, 13840];
+    for (var i = 0; i < this.heroes.length; i++) this.heroes[i].damageDone = fixtureDamage[i] || 0;
+    this.totalDamage = (win ? 58420 : 0) + fixtureDamage.reduce(function (sum, value) { return sum + value; }, 0);
+    this.gameTime = win ? 166 : 137;
+    this.kills = win ? 58 : 37;
+    this.baseHp = win ? 630 : 0;
+    this.wave = win ? this.waveMax : Math.max(1, this.waveMax - 3);
+    this.waveQueue = [];
+    this.enemies = [];
+    this.waveBanner = 0;
+    this.messageTime = 0;
+    this.battleResult = this.captureBattleResult(win);
+    this.state = 'result';
+    this.win = win;
+  };
+
+  // 仅由 localhost 的 ?qa=elite-draw-fixture 触发：用于检查煞签结果层版式与点击回战。
+  Game.prototype.openQaEliteDrawPreview = function () {
+    this.beginBattle();
+    this.state = 'battle';
+    this.phase = 'wave';
+    this.offerEliteDraw({ name: '镇魂甲尸', wave: 3 });
+    if (this.eliteDrawState) this.eliteDrawState.t = ELITE_DRAW_TIMING.revealEnd;
   };
 
   Game.prototype.startWave = function (number) {
@@ -1791,10 +3246,15 @@
     this.enemyClusterLane = (Math.random() * (WALL_MODE ? WALL_ENEMY_LANES.length : GRID_COLS.length)) | 0;
     this.wallEnemyLaneBag = [];
     this.waveQueue = []; this.waveKills = 0; this.waveProgress = 0; this.waveProgressFlash = 0; this.waveUpgradeOffered = false; this.waveRuneDropOffered = false;
+    this.bossAppearPlayed = false;
     this.waveReviveUsed = false; this.spellDiscountWave = 0;
     for (var resetHero = 0; resetHero < this.heroes.length; resetHero++) this.heroes[resetHero].firstHitGuardUsed = false;
-    var fallback = { stage: '1-' + number, spawnInterval: Math.max(.34, .65 - number * .012), enemies: { wisp: 4 + Math.floor(number * .55) } };
-    var config = YL.WAVE_CONFIG && YL.WAVE_CONFIG[number - 1] ? YL.WAVE_CONFIG[number - 1] : fallback;
+    var selectedStage = this.getSelectedStage();
+    var fallback = { spawnInterval: Math.max(.34, .65 - number * .012), enemies: { wisp: 4 + Math.floor(number * .55) } };
+    var source = this.stageWaveConfig && this.stageWaveConfig[number - 1] ? this.stageWaveConfig[number - 1] : fallback;
+    var config = {}, configKey;
+    for (configKey in source) config[configKey] = source[configKey];
+    config.stage = selectedStage.id;
     this.currentWaveConfig = config;
     if (config.sequence && config.sequence.length) {
       for (var seq = 0; seq < config.sequence.length; seq++) {
@@ -1820,11 +3280,12 @@
     for (var bi = 0; bi < bosses; bi++) this.waveQueue.push({ type: 'boss', elite: true, mini: !!config.miniBoss });
     this.waveTotal = 0;
     for (var totalIndex = 0; totalIndex < this.waveQueue.length; totalIndex++) {
-      if (this.waveQueue[totalIndex].type !== 'gap') this.waveTotal++;
+      // Boss 是末波独立压轴，不占小怪计数；进度条在 Boss 出场前就能到满。
+      if (this.waveQueue[totalIndex].type !== 'gap' && this.waveQueue[totalIndex].type !== 'boss') this.waveTotal++;
     }
     this.waveClearSfxPlayed = false;
-    if (bosses > 0) this.audio.playSfx('bossAppear');
-    else this.audio.playSfx('waveStart');
+    // Boss 先留在队尾，等最后一波小怪清空、最后一次强化结算后再播出场音效并生成。
+    this.audio.playSfx('waveStart');
     this.activeWaveShowcase = this.nextWaveShowcase;
     this.nextWaveShowcase = null;
     if (this.activeWaveShowcase) {
@@ -1878,6 +3339,14 @@
     return enemy.y + this.wallEnemyFootOffset(enemy);
   };
 
+  Game.prototype.wallEnemyHeadY = function (enemy) {
+    if (!enemy) return Infinity;
+    var scale = enemy.size || 1;
+    var headOffset = enemy.type === 'boss' ? 44 :
+      (enemy.type === 'armored' || enemy.type === 'jiangshi' ? 25 : 18);
+    return enemy.y - headOffset * scale;
+  };
+
   Game.prototype.wallEnemyBreachCenterY = function (enemy) {
     return WALL_DEFENSE_LINE_Y - this.wallEnemyFootOffset(enemy);
   };
@@ -1903,6 +3372,9 @@
     if ((enemy.huangjinHeavySlow || 0) > 0) {
       var heavyAttack = heroSkillConfig('huangjin').attack || {};
       mult *= valueOr(heavyAttack.heavySlowMultiplier, .75);
+    }
+    if ((enemy.spiritLineBloodSlow || 0) > 0) {
+      mult *= enemy.spiritLineBloodSlowMultiplier == null ? .80 : enemy.spiritLineBloodSlowMultiplier;
     }
     if ((this.protagonistRainTime || 0) > 0) {
       mult *= valueOr(SPELL_META.rain && SPELL_META.rain.slowMultiplier, .88);
@@ -1998,14 +3470,23 @@
     var eliteScale = elitePower ? 1.65 : 1;
     if (mini) eliteScale *= .62;
     var waveHpScale = valueOr(this.currentWaveConfig && this.currentWaveConfig.enemyHpScale, 1);
+    var bossHpScale = type === 'boss' ? valueOr(this.currentWaveConfig && this.currentWaveConfig.bossHpScale, 1) : 1;
     var waveDamageScale = valueOr(this.currentWaveConfig && this.currentWaveConfig.enemyDamageScale, 1);
     var waveEliteHpScale = type === 'jiangshi' ? valueOr(this.currentWaveConfig && this.currentWaveConfig.eliteHpScale, 1) : 1;
     var waveEliteDamageScale = type === 'jiangshi' ? valueOr(this.currentWaveConfig && this.currentWaveConfig.eliteDamageScale, 1) : 1;
     var waveEliteAttackRateScale = type === 'jiangshi' ? valueOr(this.currentWaveConfig && this.currentWaveConfig.eliteAttackRateScale, 1) : 1;
-    var hp = data.hp * scale * eliteScale * waveHpScale * waveEliteHpScale;
-    var speedOverrides = battleTuning().enemy && battleTuning().enemy.speed || {};
+    var eliteDraw = eliteDrawTuning();
+    var eligibleTypes = eliteDraw.eligibleTypes || ['jiangshi'];
+    var eliteRewardEligible = WALL_MODE && !this.isSpiritLineMode() && !this.isFirstStageTutorialActive() && eliteDraw.enabled !== false &&
+      this.wave >= valueOr(eliteDraw.minWave, 3) && type !== 'boss' && !mini && eligibleTypes.indexOf(type) >= 0;
+    var hp = data.hp * scale * eliteScale * waveHpScale * waveEliteHpScale * bossHpScale;
+    var enemyTuning = battleTuning().enemy || {};
+    // 1-2 的紧凑交战节奏不能扩散到旧关卡；旧城墙关继续使用全局基础调参。
+    if (this.isSpiritLineMode && this.isSpiritLineMode() && enemyTuning.spiritLineV2) enemyTuning = enemyTuning.spiritLineV2;
+    var speedOverrides = enemyTuning.speed || {};
     var baseSpeed = speedOverrides[type] == null ? data.speed : speedOverrides[type];
-    var sizeOverrides = battleTuning().enemy && battleTuning().enemy.sizeScale || {};
+    var sizeOverrides = enemyTuning.sizeScale || {};
+    var attackRateOverrides = enemyTuning.attackRate || {};
     var typeSizeScale = sizeOverrides[type] == null ? 1 : sizeOverrides[type];
     var eliteSizeScale = eliteVisual && type !== 'boss' ? (sizeOverrides.elite == null ? 1.08 : sizeOverrides.elite) : 1;
     var jitter = density.xJitter || 0;
@@ -2017,11 +3498,11 @@
       name: data.name,
       hp: hp, maxHp: hp, speed: baseSpeed * (elitePower ? 1.05 : 1),
       damage: data.damage * (type === 'boss' ? 1 : 1 + (this.wave - 1) * .018) * waveDamageScale * waveEliteDamageScale,
-      attackRate: data.rate * waveEliteAttackRateScale,
+      attackRate: (attackRateOverrides[type] == null ? data.rate : attackRateOverrides[type]) * waveEliteAttackRateScale,
       attackType: 'melee', attackRange: data.range,
       attackCd: Math.random() * .5, size: data.size * typeSizeScale * eliteSizeScale,
       xp: data.xp * (elitePower ? 2 : 1), coin: data.coin * (elitePower ? 2 : 1),
-      elite: eliteVisual, mini: mini, blocker: null, breaking: false, dead: false,
+      elite: eliteVisual, eliteRewardEligible: eliteRewardEligible, mini: mini, blocker: null, breaking: false, dead: false,
       slow: 0, freeze: 0, burn: 0, burnDps: 0, burnTick: 0, hit: 0, age: 0, hpBarTime: 0,
       rowPause: 0, nextRowStop: 0, redFlash: 0, soulExplosionGuard: false,
       summonCd: type === 'boss' ? 6 : 999, summonAnim: 0, attackAnim: 0,
@@ -2030,7 +3511,20 @@
       hitHold: 0, attackFacing: 1, moving: false, wallAttackWindup: 0,
       wallRouteOffsetX: spawnX - laneXs[laneIndex], wallPathIndex: 0, wallPath: null
     };
+    if (type === 'boss' && this.currentWaveConfig && this.currentWaveConfig.rescueThreat && this.nubaRescue && !this.nubaRescue.complete) {
+      enemy.nubaRescueThreat = true;
+      this.nubaRescue.threatEnemyId = enemy.id;
+    }
     if (WALL_MODE) enemy.wallPath = this.makeWallEnemyPath(enemy, laneIndex);
+    if (this.isSpiritLineMode()) {
+      enemy.lineSector = clamp(Math.floor(laneIndex / Math.max(1, WALL_ENEMY_LANES.length) * SPIRIT_LINE_HOME_SLOTS.length), 0, SPIRIT_LINE_HOME_SLOTS.length - 1) | 0;
+      // 甲尸作为原型中的远程压制单位：进入守备区射程后攻击御灵，不替代近战阻挡规则。
+      if (type === 'jiangshi') {
+        enemy.attackType = 'ranged';
+        enemy.attackRange = 210;
+        enemy.attackWindupDuration = .28;
+      }
+    }
     this.enemies.push(enemy);
   };
 
@@ -2058,6 +3552,10 @@
 
   Game.prototype.isHeroUltimateUnlocked = function (hero) {
     if (!hero) return false;
+    if (this.isSpiritLineMode() && hero.spiritLineV2) {
+      var v2UnlockId = SPIRIT_LINE_V2_ULTIMATE_UPGRADES[hero.type];
+      return !!hero.ultimateUnlocked || !!(v2UnlockId && this.rogueLevel(v2UnlockId) > 0);
+    }
     var unlockId = WALL_ULTIMATE_UNLOCK_UPGRADES[hero.type];
     if (WALL_MODE && unlockId) return !!hero.ultimateUnlocked || this.rogueLevel(unlockId) > 0;
     return !!hero.ultimateUnlocked || !!(hero.upgrades && hero.upgrades.ultimate > 0);
@@ -2082,6 +3580,21 @@
     if (!WALL_MODE || !isWallUltimateUnlockUpgrade(upgrade)) return true;
     var hero = this.heroByType(upgrade.hero);
     return !!(hero && !this.isHeroUltimateUnlocked(hero) && this.heroExclusiveUpgradeCount(hero) >= WALL_ULTIMATE_UNLOCK_REQUIRED);
+  };
+
+  Game.prototype.canOfferSpiritLineV2Ultimate = function (upgrade) {
+    if (!upgrade || !upgrade.spiritLineV2Ultimate) return true;
+    var hero = this.heroByType(upgrade.hero);
+    if (!hero) return false;
+    // 红色 0 星是觉醒解锁牌；红色 1—3 星只在对应大招已经解锁后进入该角色牌池。
+    if (upgrade.ultimateEnhancement) return this.isHeroUltimateUnlocked(hero);
+    return !this.isHeroUltimateUnlocked(hero) && this.heroExclusiveUpgradeCount(hero) >= WALL_ULTIMATE_UNLOCK_REQUIRED;
+  };
+
+  Game.prototype.spiritLineV2UltimateEnhancementLevel = function (heroOrType) {
+    var type = typeof heroOrType === 'string' ? heroOrType : heroOrType && heroOrType.type;
+    var upgradeId = type && SPIRIT_LINE_V2_ULTIMATE_ENHANCEMENT_UPGRADES[type];
+    return upgradeId ? this.spiritLineV2Level(upgradeId) : 0;
   };
 
   Game.prototype.getEnemy = function (id) {
@@ -2148,7 +3661,9 @@
     return hero.type === 'huangjin'
       ? this.acquireWallHuangjinTarget(hero)
       : hero.type === 'xuanya' ? this.acquireWallXuanyaTarget(hero)
-        : hero.type === 'suwen' ? this.acquireWallSuwenTarget(hero) : this.acquireTarget(hero);
+        : hero.type === 'suwen' ? this.acquireWallSuwenTarget(hero)
+          : hero.type === 'nuba' ? (this.densestEnemy() || this.acquireTarget(hero))
+            : this.acquireTarget(hero);
   };
 
   Game.prototype.isWallReleaseTargetValid = function (hero, enemy) {
@@ -2303,6 +3818,144 @@
 
   Game.prototype.heroAttackPower = function (hero) {
     return hero.damage;
+  };
+
+  // 女魃不使用“累计普攻次数”作为连携门槛：场上存在裂日天仪时，下一次普攻直接读取旧仪。
+  // 这样普攻负责布置可见形态，连携负责改变下一次落点与攻击轨迹，强化只放大这条关系。
+  Game.prototype.nubaStarLevel = function (hero) {
+    return this.heroStarLevel(hero);
+  };
+
+  Game.prototype.nubaCreateSigil = function (hero, x, y, damage, options) {
+    options = options || {};
+    var attack = heroSkillConfig('nuba').attack || {};
+    var star = this.nubaStarLevel(hero);
+    var n01 = this.rogueLevel('N01');
+    var radius = valueOr(attack.fieldRadius, 112);
+    var damageMultiplier = n01 >= 1 ? 1.20 : 1;
+    if (n01 >= 1 || star >= 3) radius += n01 * 6 + (star >= 3 ? 18 : 0);
+    if (star >= 8 || n01 >= 2) radius = Math.max(radius, valueOr(attack.upgradedFieldRadius, 130));
+    var fallDelay = valueOr(options.fallDelay, attack.fallDelay || .38);
+    var duration = valueOr(options.duration, attack.fieldDuration || 2.6);
+    var zone = {
+      type: 'nubaSigil', x: clamp(x, 44, W - 44), y: clamp(y, 178, WALL_DEFENSE_LINE_Y - 42),
+      r: radius, hero: hero.id, damage: damage * damageMultiplier, tickDamage: damage * damageMultiplier * valueOr(attack.fieldTickDamageAtk, .24) / Math.max(.01, valueOr(attack.damageAtk, .92)),
+      tickInterval: valueOr(attack.fieldTickInterval, .82), tick: valueOr(attack.fieldTickInterval, .82),
+      delay: fallDelay, life: fallDelay + duration, maxLife: fallDelay + duration, age: 0, fired: false,
+      dualRing: star >= 8 || n01 >= 2, sidePillars: n01 >= 3,
+      gate: n01 >= 3, remember: options.remember !== false, color: '#d7c38a'
+    };
+    this.zones.push(zone);
+    if (zone.remember) hero.nubaSigil = zone;
+    return zone;
+  };
+
+  Game.prototype.fireNubaSigil = function (zone) {
+    if (!zone || zone.fired) return;
+    zone.fired = true;
+    var hero = this.getHero(zone.hero);
+    if (!hero) return;
+    this.damageArea(zone.x, zone.y, zone.r, zone.damage, hero, null, { impact: true, noRune: true });
+    if (zone.dualRing) this.damageArea(zone.x, zone.y, zone.r + 34, zone.damage * .34, hero, null, { impact: true, noRune: true });
+    this.zones.push({ type: 'nubaPillar', x: zone.x, y: zone.y, r: zone.r, hero: hero.id, damage: 0, delay: 0, life: .48, maxLife: .48, age: 0, fired: true, color: '#d7c38a' });
+    if (zone.sidePillars) {
+      for (var side = -1; side <= 1; side += 2) {
+        this.zones.push({
+          type: 'nubaPillar', x: zone.x + side * Math.min(54, zone.r * .46), y: zone.y + 8,
+          r: zone.r * .46, hero: hero.id, damage: zone.damage * .30, delay: .10, life: .58, maxLife: .58,
+          age: 0, fired: false, color: '#d7c38a'
+        });
+      }
+    }
+    this.zones.push({ type: 'ring', x: zone.x, y: zone.y, r: zone.r, color: '#d7c38a', life: .28, maxLife: .28 });
+    this.burst(zone.x, zone.y - 8, '#d7c38a', zone.dualRing ? 15 : 9);
+  };
+
+  Game.prototype.triggerNubaResonance = function (hero, oldZone, aim) {
+    if (!hero || !oldZone || oldZone.life <= 0 || oldZone.resonated) return false;
+    if (oldZone.type === 'nubaSigil' && !oldZone.fired) this.fireNubaSigil(oldZone);
+    oldZone.resonated = true;
+    oldZone.life = Math.min(oldZone.life, .20);
+    if (hero.nubaSigil === oldZone) hero.nubaSigil = null;
+    var attack = heroSkillConfig('nuba').attack || {};
+    var n02 = this.rogueLevel('N02');
+    var star = this.nubaStarLevel(hero);
+    var startX = oldZone.x, startY = oldZone.y - 4;
+    var endX = clamp(aim.x, 44, W - 44), endY = clamp(aim.y - 10, 178, WALL_DEFENSE_LINE_Y - 42);
+    var midX = (startX + endX) * .5, midY = (startY + endY) * .5;
+    var dx = endX - startX, dy = endY - startY, length = Math.sqrt(dx * dx + dy * dy) || 1;
+    var nx = -dy / length, ny = dx / length;
+    var branch = n02 >= 2 || star >= 5;
+    var gate = n02 >= 3 || star >= 13;
+    var life = .56;
+    this.zones.push({
+      type: 'nubaResonance', x: startX, y: startY, tx: endX, ty: endY,
+      branchA: branch ? { x: midX + nx * 56, y: midY + ny * 56 } : null,
+      branchB: branch ? { x: midX - nx * 56, y: midY - ny * 56 } : null,
+      hitWidth: valueOr(attack.resonanceWidth, 28) + (star >= 13 ? 8 : 0),
+      damage: this.heroAttackPower(hero) * valueOr(attack.resonanceLineDamageAtk, .72) * (n02 >= 1 ? 1.25 : 1),
+      burstDamage: this.heroAttackPower(hero) * valueOr(attack.resonanceBurstDamageAtk, .46),
+      hero: hero.id, delay: .10, life: life, maxLife: life, age: 0, fired: false, gate: gate,
+      color: '#d7c38a'
+    });
+    hero.nubaResonanceFlash = .58;
+    this.floatText(endX, endY - 66, gate ? '覆日天门' : '天仪共鸣', '#e6d49b', 18, { life: .72, bold: true, rise: 14 });
+    this.burst(endX, endY - 8, '#d7c38a', branch ? 12 : 7);
+    return true;
+  };
+
+  Game.prototype.releaseNubaAttack = function (hero, target, aim) {
+    var attack = heroSkillConfig('nuba').attack || {};
+    var damage = this.heroAttackPower(hero) * hero.attackMultiplier * valueOr(attack.damageAtk, .92);
+    if (hero.nubaSigil && hero.nubaSigil.life > 0) this.triggerNubaResonance(hero, hero.nubaSigil, aim);
+    this.nubaCreateSigil(hero, aim.x, aim.y - 12, damage);
+    hero.nubaCastDuration = valueOr(attack.castAnimDuration, .34);
+    hero.nubaCastTime = hero.nubaCastDuration;
+    this.burst(hero.x, hero.y - 74, '#d7c38a', 8);
+  };
+
+  Game.prototype.castNubaUltimate = function (hero, enemies, ultimate, atk) {
+    var center = this.densestEnemy() || this.highestThreatEnemy();
+    if (!center) return false;
+    this.beginWallUltimateMoment(hero, '赤地无疆！', '#d7c38a');
+    var n04 = this.rogueLevel('N04');
+    var star = this.nubaStarLevel(hero);
+    var lane = n04 >= 3 || star >= 15;
+    var radius = lane ? valueOr(ultimate.laneRadius, 390) : valueOr(ultimate.radius, 226);
+    var fieldDuration = valueOr(ultimate.fieldDuration, 4);
+    var centerDamage = atk * valueOr(ultimate.centerDamageAtk, 1.8);
+    this.damageArea(center.x, center.y, radius, centerDamage, hero, null, { impact: true, skill: true, noSkillPush: true, noRune: true });
+    this.zones.push({ type: 'nubaUltimate', x: center.x, y: center.y, r: radius, hero: hero.id, lane: lane, life: .95, maxLife: .95, age: 0, color: '#d7c38a' });
+    this.zones.push({
+      type: 'nubaField', x: center.x, y: center.y, r: radius, hero: hero.id, lane: lane,
+      life: fieldDuration, maxLife: fieldDuration, age: 0, tick: valueOr(ultimate.fieldTickInterval, .80),
+      tickInterval: valueOr(ultimate.fieldTickInterval, .80), moving: n04 >= 2 || star >= 15,
+      damage: atk * valueOr(ultimate.fieldTickDamageAtk, .42), color: '#d7c38a'
+    });
+    var count = Math.max(1, valueOr(ultimate.pillarCount, 5));
+    for (var pillar = 0; pillar < count; pillar++) {
+      var px = lane ? 72 + pillar * (W - 144) / Math.max(1, count - 1) : center.x + Math.cos(-Math.PI / 2 + pillar * Math.PI * 2 / count) * radius * .56;
+      var py = lane ? center.y + Math.sin(pillar * 1.4) * 32 : center.y + Math.sin(-Math.PI / 2 + pillar * Math.PI * 2 / count) * radius * .30;
+      var pillarDelay = valueOr(ultimate.pillarDelay, .16) + pillar * valueOr(ultimate.pillarSpacing, .16);
+      this.zones.push({
+        type: 'nubaPillar', x: px, y: py, r: valueOr(ultimate.pillarRadius, 74), hero: hero.id,
+        damage: atk * valueOr(ultimate.pillarDamageAtk, .55), delay: pillarDelay, life: pillarDelay + .52,
+        maxLife: pillarDelay + .52, age: 0, fired: false, skill: true, color: '#d7c38a'
+      });
+    }
+    if (n04 >= 2) {
+      for (var sigil = 0; sigil < 3; sigil++) {
+        var sigilX = center.x + (sigil - 1) * 86;
+        var autoSigil = this.nubaCreateSigil(hero, sigilX, center.y + 28, atk * .42, { remember: false, duration: 1.65, fallDelay: .18 });
+        autoSigil.gate = n04 >= 3 || star >= 15;
+      }
+    }
+    if (hero.nubaSigil && hero.nubaSigil.life > 0) this.triggerNubaResonance(hero, hero.nubaSigil, center);
+    hero.nubaCastDuration = valueOr(ultimate.castDuration, .92);
+    hero.nubaCastTime = hero.nubaCastDuration;
+    this.burst(center.x, center.y - 12, '#d7c38a', lane ? 32 : 24);
+    this.shake = Math.max(this.shake, valueOr(ultimate.shake, 10));
+    return true;
   };
 
   Game.prototype.hongyiStarLevel = function (hero) {
@@ -2695,6 +4348,8 @@
       hero.redFlash = Math.max(0, (hero.redFlash || 0) - dt);
       hero.skillReadyFlash = Math.max(0, (hero.skillReadyFlash || 0) - dt);
       hero.skillCastFlash = Math.max(0, (hero.skillCastFlash || 0) - dt);
+      hero.nubaCastTime = Math.max(0, (hero.nubaCastTime || 0) - dt);
+      hero.nubaResonanceFlash = Math.max(0, (hero.nubaResonanceFlash || 0) - dt);
       hero.qingyiSynergyFlash = Math.max(0, (hero.qingyiSynergyFlash || 0) - dt);
       hero.qingyiSynergyTime = Math.max(0, (hero.qingyiSynergyTime || 0) - dt);
       if (hero.qingyiSynergyTime <= 0) hero.qingyiSynergyBurstReady = false;
@@ -2741,7 +4396,137 @@
     }
   };
 
+  Game.prototype.acquireSpiritLineTarget = function (hero) {
+    if (!hero || !hero.lineUnlocked || !hero.alive) return null;
+    var emergency = this.acquireSpiritLineBreachTarget(hero);
+    if (emergency) return emergency;
+    var best = null, bestScore = Infinity;
+    var sector = hero.lineSlot == null ? this.spiritLineSectorForX(hero.x) : hero.lineSlot;
+    var range = Math.max(100, hero.search || hero.attackRange || 260);
+    for (var i = 0; i < this.enemies.length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead || enemy.lineSector !== sector) continue;
+      var d = distance(hero.x, hero.y, enemy.x, enemy.y);
+      if (d > range) continue;
+      // 优先处理最接近城防的敌人；同一守备区内保留明确的前线压力。
+      var score = this.wallEnemyDistanceToDefense(enemy) * .85 + d * .15;
+      if (score < bestScore) { bestScore = score; best = enemy; }
+    }
+    return best;
+  };
+
+  Game.prototype.isSpiritLineBreachThreat = function (enemy) {
+    if (!enemy || enemy.dead) return false;
+    var enemyTuning = battleTuning().enemy || {};
+    var v2Tuning = enemyTuning.spiritLineV2 || {};
+    var response = v2Tuning.breachResponse || {};
+    var warningDistance = response.warningDistance == null ? 72 : response.warningDistance;
+    return !!enemy.breaking || this.wallEnemyFootY(enemy) >= WALL_DEFENSE_LINE_Y - warningDistance;
+  };
+
+  Game.prototype.acquireSpiritLineBreachTarget = function (hero) {
+    if (!hero || !hero.lineUnlocked || !hero.alive) return null;
+    var enemyTuning = battleTuning().enemy || {};
+    var v2Tuning = enemyTuning.spiritLineV2 || {};
+    var response = v2Tuning.breachResponse || {};
+    var emergencyRange = hero.attackType === 'melee'
+      ? Math.max(hero.search || 0, response.meleeSearch || 360)
+      : Math.max(hero.search || 0, hero.attackRange || 0);
+    var best = null, bestScore = Infinity;
+    for (var i = 0; i < this.enemies.length; i++) {
+      var enemy = this.enemies[i];
+      if (!this.isSpiritLineBreachThreat(enemy)) continue;
+      var d = distance(hero.x, hero.y, enemy.x, enemy.y);
+      if (d > emergencyRange) continue;
+      // 越接近城门越优先；距离只用于避免角色无意义横穿整条战线。
+      var score = this.wallEnemyDistanceToDefense(enemy) * .82 + d * .18;
+      if (score < bestScore) { bestScore = score; best = enemy; }
+    }
+    return best;
+  };
+
+  Game.prototype.updateSpiritLineHeroes = function (dt) {
+    for (var i = 0; i < this.heroes.length; i++) {
+      var hero = this.heroes[i];
+      hero.flash = Math.max(0, (hero.flash || 0) - dt);
+      hero.redFlash = Math.max(0, (hero.redFlash || 0) - dt);
+      hero.hitReact = Math.max(0, (hero.hitReact || 0) - dt);
+      hero.shieldFlash = Math.max(0, (hero.shieldFlash || 0) - dt);
+      hero.hitHold = Math.max(0, (hero.hitHold || 0) - dt);
+      if (hero.hitHold <= 0) hero.attackAnim = Math.max(0, (hero.attackAnim || 0) - dt);
+      hero.skillReadyFlash = Math.max(0, (hero.skillReadyFlash || 0) - dt);
+      hero.skillCastFlash = Math.max(0, (hero.skillCastFlash || 0) - dt);
+      hero.invuln = Math.max(0, (hero.invuln || 0) - dt);
+      if (!hero.lineUnlocked) continue;
+
+      if (!hero.alive) {
+        this.updateSoulReturn(hero, dt);
+        hero.respawn -= dt;
+        if (hero.respawn <= 0) this.respawnHero(hero);
+        continue;
+      }
+      if (hero.spiritLineV2) this.updateSpiritLineV2HeroState(hero, dt);
+      else if (hero.type === 'hongyi') this.updateHongyiPassive(hero, dt);
+      hero.attackCd -= dt;
+      hero.blocked = [];
+      for (var b = 0; b < this.enemies.length; b++) {
+        if (this.enemies[b].blocker === hero.id && !this.enemies[b].dead) hero.blocked.push(this.enemies[b].id);
+      }
+
+      var ultimateUnlocked = this.isHeroUltimateUnlocked(hero);
+      if (ultimateUnlocked) hero.ultimateCd = Math.max(-.2, (hero.ultimateCd || 0) - dt);
+      else hero.ultimateCd = hero.ultimateMax;
+
+      if (hero.attackWindup > 0) {
+        hero.attackWindup -= dt;
+        if (hero.attackWindup <= 0) {
+          var pending = this.getEnemy(hero.pendingTarget);
+          if (pending && (pending.lineSector === hero.lineSlot || this.isSpiritLineBreachThreat(pending)) && this.isTargetEngageable(hero, pending)) this.releaseHeroAttack(hero, pending);
+          else hero.attackAnim = hero.attackRecoveryDuration || .28;
+          hero.pendingTarget = null;
+        }
+        continue;
+      }
+
+      var home = this.spiritLineHome(hero);
+      var target = this.acquireSpiritLineTarget(hero);
+      hero.target = target ? target.id : null;
+      hero.walking = false;
+      if (target) {
+        var d = distance(hero.x, hero.y, target.x, target.y);
+        var desiredRange = hero.attackType === 'melee' ? Math.min(92, hero.attackRange) : hero.attackRange;
+        if (d > desiredRange - 8) {
+          // 近战只会向前顶住怪物；远程只可小幅前压，始终保留阵主与城防后的空间。
+          var dx = target.x - hero.x, dy = target.y - hero.y;
+          var step = hero.moveSpeed * dt;
+          var nextX = hero.x + dx / Math.max(1, d) * step;
+          var nextY = hero.y + dy / Math.max(1, d) * step;
+          var sectorW = W / SPIRIT_LINE_HOME_SLOTS.length;
+          var minX = hero.lineSlot * sectorW + 18;
+          var maxX = (hero.lineSlot + 1) * sectorW - 18;
+          hero.x = clamp(nextX, minX, maxX);
+          // 守备区只允许有限前压：交战线整体前推，但不会演化成玩家需要频繁微操的跑图。
+          var forwardLimit = home.y - (hero.attackType === 'melee' ? 150 : 72);
+          hero.y = clamp(nextY, forwardLimit, SPIRIT_LINE_MAX_Y);
+          hero.attackFacing = dx >= 0 ? 1 : -1;
+          hero.walking = true;
+        } else if (hero.attackCd <= 0) {
+          this.heroAttack(hero, target);
+        }
+      } else {
+        var hd = distance(hero.x, hero.y, home.x, home.y);
+        if (hd > 3) {
+          var hs = Math.min(hd, hero.moveSpeed * .72 * dt);
+          hero.x += (home.x - hero.x) / hd * hs;
+          hero.y += (home.y - hero.y) / hd * hs;
+        }
+      }
+      if (ultimateUnlocked && hero.ultimateCd <= 0) this.castWallHeroUltimate(hero);
+    }
+  };
+
   Game.prototype.updateHeroes = function (dt) {
+    if (this.isSpiritLineMode()) { this.updateSpiritLineHeroes(dt); return; }
     if (WALL_MODE) { this.updateWallHeroes(dt); return; }
     for (var i = 0; i < this.heroes.length; i++) {
       var hero = this.heroes[i];
@@ -2834,7 +4619,7 @@
   };
 
   Game.prototype.updateSoulReturn = function (hero, dt) {
-    var anchor = this.heroSoulAnchor(hero);
+    var anchor = this.isSpiritLineMode() ? this.spiritLineHome(hero) : this.heroSoulAnchor(hero);
     if (!anchor) return;
     if (!hero.soulReturn) {
       hero.x = anchor.x; hero.y = anchor.y;
@@ -2886,6 +4671,145 @@
         }
       }
     }
+  };
+
+  Game.prototype.syncSpiritLineBlocks = function () {
+    for (var i = 0; i < this.enemies.length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead || enemy.attackType === 'ranged') continue;
+      if (enemy.blocker) {
+        var oldHero = this.getHero(enemy.blocker);
+        if (!oldHero || !oldHero.alive || !oldHero.lineUnlocked || oldHero.lineSlot !== enemy.lineSector || distance(enemy.x, enemy.y, oldHero.x, oldHero.y) > 155) enemy.blocker = null;
+      }
+    }
+    for (var h = 0; h < this.heroes.length; h++) {
+      var hero = this.heroes[h];
+      if (!hero.lineUnlocked || !hero.alive) continue;
+      var occupied = 0;
+      for (var e = 0; e < this.enemies.length; e++) if (!this.enemies[e].dead && this.enemies[e].blocker === hero.id) occupied++;
+      if (occupied >= Math.max(1, hero.block || 1)) continue;
+      var candidate = null, candidateD = Infinity;
+      for (var c = 0; c < this.enemies.length; c++) {
+        var target = this.enemies[c];
+        if (!target || target.dead || target.blocker || target.attackType === 'ranged' || target.lineSector !== hero.lineSlot) continue;
+        var d = distance(target.x, target.y, hero.x, hero.y);
+        if (d <= 132 && d < candidateD) { candidate = target; candidateD = d; }
+      }
+      if (candidate) {
+        candidate.blocker = hero.id;
+        hero.blockedTotal++;
+        this.burst(candidate.x, candidate.y, HERO_META[hero.type].color, 5);
+      }
+    }
+  };
+
+  Game.prototype.protagonistAttackOrigin = function () {
+    var r = BATTLE_LOWER_ART.protagonist;
+    return { x: r.x, y: r.y - 76 };
+  };
+
+  Game.prototype.showProtagonistAimClick = function (x, y) {
+    if (!isFinite(x) || !isFinite(y)) return false;
+    this.zones.push({ type: 'protagonistAimClick', x: x, y: y, r: 22, life: .34, maxLife: .34, age: 0 });
+    return true;
+  };
+
+  Game.prototype.battlefieldAimPointAt = function (x, y) {
+    if (!WALL_MODE || this.phase !== 'wave') return false;
+    var tutorialAttack = this.isFirstStageTutorialAttackGuideActive && this.isFirstStageTutorialAttackGuideActive();
+    var minAimY = tutorialAttack ? 118 : 220;
+    if (x < 24 || x > W - 24 || y < minAimY || y > WALL_DEFENSE_LINE_Y + 12) return false;
+    if (this.sideActionAt(x, y) >= 0) return false;
+    return true;
+  };
+
+  Game.prototype.findProtagonistTarget = function () {
+    var target = null, score = Infinity;
+    for (var i = 0; i < this.enemies.length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead) continue;
+      var next = this.wallEnemyDistanceToDefense(enemy) + Math.abs(enemy.x - W / 2) * .08;
+      if (next < score) { score = next; target = enemy; }
+    }
+    return target;
+  };
+
+  Game.prototype.protagonistAttackInterval = function () {
+    return Math.max(.72, 1.05 * Math.pow(.84, this.protagonistRateLevel || 0));
+  };
+
+  Game.prototype.launchProtagonistSigil = function (target, damage, manual) {
+    if (!target || target.dead) return false;
+    var origin = this.protagonistAttackOrigin();
+    var originX = origin.x, originY = origin.y;
+    var shot = {
+      x: originX, y: originY, prevX: originX, prevY: originY,
+      target: target.id, hero: null, type: 'protagonistSigil',
+      speed: 760, damage: damage, cosmetic: false, color: '#8ff4ff', r: 8,
+      life: 2.1, age: 0, primary: true, maxDistance: 1040, manual: !!manual
+    };
+    this.prepareProjectileFreeFlight(shot, target, 1040);
+    this.projectiles.push(shot);
+    this.protagonistAttackFlash = .18;
+    this.zones.push({ type: 'ring', x: originX, y: originY - 11, r: 23, color: '#8ff4ff', life: .22, maxLife: .22 });
+    this.audio.tone('shoot');
+    return true;
+  };
+
+  Game.prototype.launchProtagonistTalisman = function (aimX, aimY, damage, manual) {
+    var origin = this.protagonistAttackOrigin();
+    var dx = aimX - origin.x, dy = aimY - origin.y;
+    var d = Math.sqrt(dx * dx + dy * dy);
+    if (!isFinite(d) || d < 1) return false;
+    var dirX = dx / d, dirY = dy / d;
+    var shot = {
+      x: origin.x, y: origin.y, prevX: origin.x, prevY: origin.y,
+      target: null, hero: null, type: 'protagonistTalisman',
+      speed: 900, damage: damage, cosmetic: false, color: '#8ff4ff', r: 10,
+      life: 2.1, age: 0, primary: true, maxDistance: 1460,
+      freeVx: dirX, freeVy: dirY, dirX: dirX, dirY: dirY,
+      distanceTraveled: 0, manual: !!manual, hitIds: []
+    };
+    this.projectiles.push(shot);
+    this.protagonistAttackFlash = .22;
+    this.protagonistCastMax = .62;
+    this.protagonistCastTime = this.protagonistCastMax;
+    this.zones.push({ type: 'ring', x: origin.x, y: origin.y - 11, r: 23, color: '#8ff4ff', life: .22, maxLife: .22 });
+    this.audio.tone('shoot');
+    return true;
+  };
+
+  Game.prototype.fireProtagonistTalismanAt = function (aimX, aimY) {
+    if (!WALL_MODE || this.phase !== 'wave') return false;
+    var attackGuideActive = this.isFirstStageTutorialAttackGuideActive && this.isFirstStageTutorialAttackGuideActive();
+    if (!attackGuideActive && (this.protagonistManualAttackCd || 0) > 0) {
+      return false;
+    }
+    var origin = this.protagonistAttackOrigin();
+    var dx = aimX - origin.x, dy = aimY - origin.y;
+    if (!isFinite(dx) || !isFinite(dy) || Math.sqrt(dx * dx + dy * dy) < 1) return false;
+    var damage = 89 * (1 + (this.protagonistDamageLevel || 0) * .28);
+    // 首波教学点按必须即时响应；普通战斗仍沿用正式手动攻击冷却。
+    this.protagonistManualAttackCd = attackGuideActive ? 0 : this.protagonistAttackInterval();
+    this.protagonistAttackCount = (this.protagonistAttackCount || 0) + 1;
+    if (this.isFirstStageTutorialActive()) {
+      return this.launchProtagonistTalisman(aimX, aimY, damage, true);
+    }
+    return this.launchProtagonistTalisman(aimX, aimY, damage, true);
+  };
+
+  Game.prototype.updateProtagonistAutoAttack = function (dt) {
+    if (!this.isSpiritLineMode()) return;
+    this.protagonistAttackCd = Math.max(-.2, (this.protagonistAttackCd || 0) - dt);
+    if (this.protagonistAttackCd > 0) return;
+    var target = this.findProtagonistTarget();
+    if (!target) return;
+    // 基础频率从 1.2 秒提高到 1.05 秒，同时下调单符伤害，维持开局 DPS，
+    // 让阵主看起来稳定输出而不是突然变成主屏幕弹幕。
+    var damage = 89 * (1 + (this.protagonistDamageLevel || 0) * .28);
+    var interval = this.protagonistAttackInterval();
+    this.protagonistAttackCd = interval;
+    this.launchProtagonistSigil(target, damage, false);
   };
 
   Game.prototype.blockingHero = function (enemy) {
@@ -2968,6 +4892,41 @@
         p.launchDelay = Math.max(0, p.launchDelay - dt);
         continue;
       }
+      if (this.isSpiritLineMode() && p.spiritLineV2) {
+        if (this.updateSpiritLineV2Projectile(p, dt)) this.projectiles.splice(i, 1);
+        continue;
+      }
+      // 阵主手动发出的符纸只沿初始方向飞行，不追踪目标；
+      // 用线段碰撞避免高速符纸穿过小型诡物。
+      if (p.type === 'protagonistTalisman') {
+        p.life -= dt; p.age = (p.age || 0) + dt;
+        if (!this.advanceProjectileFreeFlight(p, dt)) {
+          this.projectiles.splice(i, 1);
+          continue;
+        }
+        var talismanHit = this.findFreeFlightProjectileHit(p);
+        if (talismanHit) {
+          this.projectileHit(p, talismanHit);
+          this.projectiles.splice(i, 1);
+        }
+        continue;
+      }
+      // 1-2 灵脉模式保留旧的自动追踪符箓逻辑；它与战场点击符纸分开。
+      if (p.type === 'protagonistSigil') {
+        p.life -= dt; p.age = (p.age || 0) + dt;
+        if (!target || target.dead || p.life <= 0) { this.projectiles.splice(i, 1); continue; }
+        var sigilDistance = distance(p.x, p.y, target.x, target.y);
+        if (sigilDistance <= p.speed * dt + 12) {
+          this.projectileHit(p, target);
+          this.projectiles.splice(i, 1);
+        } else {
+          var sigilStep = p.speed * dt;
+          p.prevX = p.x; p.prevY = p.y;
+          p.x += (target.x - p.x) / sigilDistance * sigilStep;
+          p.y += (target.y - p.y) / sigilDistance * sigilStep;
+        }
+        continue;
+      }
       if (WALL_MODE && p.curveDelay != null) {
         p.curveDelay -= dt;
         if (p.curveDelay <= 0) {
@@ -2994,6 +4953,7 @@
           this.projectiles.splice(i, 1);
           continue;
         }
+        if (this.isHongyiProjectile && this.isHongyiProjectile(p.type)) this.emitHongyiProjectileTrail(p, dt);
         var freeHit = this.findFreeFlightProjectileHit(p);
         if (freeHit) {
           this.projectileHit(p, freeHit);
@@ -3017,12 +4977,32 @@
           p.freeVy = flyVy;
           p.distanceTraveled = (p.distanceTraveled || 0) + flyStep;
         }
+        if (this.isHongyiProjectile && this.isHongyiProjectile(p.type)) this.emitHongyiProjectileTrail(p, dt);
       }
     }
   };
 
   Game.prototype.projectileHit = function (p, target) {
     var hero = this.getHero(p.hero);
+    if (p.type === 'protagonistSigil' || p.type === 'protagonistTalisman') {
+      this.zones.push({ type: 'orbImpact', x: target.x, y: target.y - 20, r: 46, vfxRow: 2, life: .28, maxLife: .28, age: 0 });
+      if (!p.cosmetic) this.damageEnemy(target, p.damage, null, { impact: true });
+      if (!p.cosmetic && (this.protagonistPierceLevel || 0) > 0) {
+        var side = null, sideD = Infinity;
+        for (var si = 0; si < this.enemies.length; si++) {
+          var other = this.enemies[si];
+          if (!other || other.dead || other.id === target.id) continue;
+          var d = distance(other.x, other.y, target.x, target.y);
+          if (d <= 104 && d < sideD) { side = other; sideD = d; }
+        }
+        if (side) {
+          this.damageEnemy(side, p.damage * (.35 + (this.protagonistPierceLevel || 0) * .10), null, { impact: true });
+          this.zones.push({ type: 'ring', x: side.x, y: side.y - 20, r: 28, color: '#8ff4ff', life: .24, maxLife: .24 });
+        }
+      }
+      this.burst(target.x, target.y, '#8ff4ff', 7);
+      return;
+    }
     if (!hero) return;
     this.zones.push({
       type: 'orbImpact', x: target.x, y: target.y - 20, r: p.type === 'hongyi' ? 62 : 54,
@@ -3076,9 +5056,116 @@
     });
   };
 
+  Game.prototype.spiritLineV2UltimateTargets = function (hero, radius, allSectors) {
+    var list = [];
+    for (var i = 0; i < this.enemies.length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead || (!allSectors && enemy.lineSector !== hero.lineSlot)) continue;
+      if (distance(hero.x, hero.y, enemy.x, enemy.y) <= radius) list.push(enemy);
+    }
+    list.sort(function (a, b) {
+      var eliteA = a.type === 'boss' ? 3 : a.elite ? 2 : 1;
+      var eliteB = b.type === 'boss' ? 3 : b.elite ? 2 : 1;
+      return eliteB - eliteA || a.y - b.y;
+    });
+    return list;
+  };
+
+  Game.prototype.castSpiritLineV2Ultimate = function (hero) {
+    if (!hero || !hero.alive) return;
+    var ultimateLevel = this.spiritLineV2UltimateEnhancementLevel(hero);
+    var triggerRadius = hero.type === 'hongyi' ? 1100 : hero.type === 'huangjin' ? 260 : 210;
+    var targets = this.spiritLineV2UltimateTargets(hero, triggerRadius, hero.type === 'hongyi');
+    var priority = targets[0];
+    var hasElite = !!(priority && (priority.elite || priority.type === 'boss'));
+    var denseCount = 0, denseTarget = priority;
+    if (hero.type === 'hongyi') {
+      for (var densityIndex = 0; densityIndex < targets.length; densityIndex++) {
+        var densitySource = targets[densityIndex], nearby = 0;
+        for (var densityOther = 0; densityOther < targets.length; densityOther++) {
+          if (dist2(densitySource.x, densitySource.y, targets[densityOther].x, targets[densityOther].y) <= 360 * 360) nearby++;
+        }
+        if (nearby > denseCount) { denseCount = nearby; denseTarget = densitySource; }
+      }
+    }
+    if (!priority || (!hasElite && hero.type !== 'hongyi' && targets.length < 3) || (hero.type === 'hongyi' && !hasElite && denseCount < 6)) {
+      hero.ultimateCd = .6;
+      return;
+    }
+    var atk = this.heroAttackPower(hero);
+    if (hero.type === 'huangjin') {
+      this.beginWallUltimateMoment(hero, '岳镇八荒！', C.gold);
+      this.damageArea(priority.x, priority.y, 260, atk * 1.50, hero, null, { impact: true, skill: true, noSkillPush: true, noRune: true });
+      for (var h = 0; h < this.enemies.length; h++) {
+        var stunned = this.enemies[h];
+        if (!stunned || stunned.dead || dist2(stunned.x, stunned.y, priority.x, priority.y) > 260 * 260) continue;
+        stunned.freeze = Math.max(stunned.freeze || 0, 1.2);
+        if (ultimateLevel >= 1) stunned.spiritLineV2StunDamageTaken = Math.max(stunned.spiritLineV2StunDamageTaken || 0, 1.2);
+      }
+      hero.shield = Math.min(atk * 1.8, Math.max(hero.shield || 0, atk * 1.5));
+      hero.spiritLineShieldTime = 6;
+      hero.spiritLineShieldBurstReady = true;
+      hero.shieldFlash = .55;
+      this.zones.push({ type: 'ring', x: priority.x, y: priority.y, r: 260, color: C.gold, life: .64, maxLife: .64 });
+      if (ultimateLevel >= 2) {
+        this.zones.push({
+          type: 'spiritLineUltimateAftershock', x: priority.x, y: priority.y, r: 260,
+          damage: atk * .70, hero: hero.id, seal: ultimateLevel >= 3,
+          life: 1.2, maxLife: 1.2, fired: false
+        });
+      }
+    } else if (hero.type === 'xuanya') {
+      this.beginWallUltimateMoment(hero, '百鬼夜行！', '#f6e7c0');
+      var strikeCount = ultimateLevel >= 1 ? 7 : 5;
+      var strikeInterval = 1.4 / Math.max(1, strikeCount - 1);
+      var facing = Math.atan2(priority.y - hero.y, priority.x - hero.x);
+      for (var x = 0; x < strikeCount; x++) {
+        var strikeLife = .10 + x * strikeInterval;
+        this.zones.push({ type: 'spiritLineUltimateStrike', x: hero.x, y: hero.y - 32, r: 128, hero: hero.id, damage: atk * .60, life: strikeLife, maxLife: strikeLife, fired: false, step: x, steps: strikeCount });
+        if (ultimateLevel >= 2) {
+          this.zones.push({ type: 'spiritLineUltimateOuterStrike', x: hero.x, y: hero.y - 32, innerR: 150, outerR: 198, hero: hero.id, damage: atk * .35, life: strikeLife, maxLife: strikeLife, fired: false, step: x, steps: strikeCount });
+        }
+      }
+      if (ultimateLevel >= 3) {
+        this.zones.push({
+          type: 'spiritLineUltimateCrescent', x: hero.x, y: hero.y - 32,
+          tx: hero.x + Math.cos(facing) * 120, ty: hero.y - 32 + Math.sin(facing) * 120,
+          hitWidth: 22, hero: hero.id, damage: atk, life: 1.58, maxLife: 1.58, fired: false
+        });
+      }
+    } else if (hero.type === 'hongyi') {
+      this.beginWallUltimateMoment(hero, '焚天火雨！', C.fire);
+      var center = denseTarget || priority;
+      if (!center) { hero.ultimateCd = .6; return; }
+      var meteorCount = 8 + (ultimateLevel >= 1 ? 2 : 0);
+      var trackingCount = hasElite && ultimateLevel >= 2 ? Math.min(4, meteorCount) : 0;
+      for (var r = 0; r < meteorCount; r++) {
+        var followElite = r < trackingCount;
+        var impactCenter = followElite ? priority : center;
+        var spread = followElite ? (r === 0 ? 0 : 16 + r * 8) : (r === 0 ? 0 : 36 + (r % 3) * 22);
+        var a = r * 2.399;
+        this.zones.push({
+          type: 'delayedFire', x: impactCenter.x + Math.cos(a) * spread, y: impactCenter.y + Math.sin(a) * spread,
+          r: 74, damage: atk * .50, hero: hero.id, life: .28 + r * .075, maxLife: .28 + r * .075,
+          fired: false, skill: true, noSkillPush: true, noBurn: true, noScreenShake: true,
+          followTarget: followElite ? priority.id : null,
+          finalMeteor: ultimateLevel >= 3 && r === meteorCount - 1
+        });
+      }
+    }
+    hero.ultimateCd = hero.ultimateMax;
+    hero.skillCastFlash = .55;
+    hero.attackAnim = .55;
+    this.audio.playSfx(hero.type === 'hongyi' ? 'ultimateHongyi' : hero.type === 'huangjin' ? 'ultimateHuangjin' : 'ultimateXuanya') || this.audio.tone('bell');
+  };
+
   Game.prototype.castWallHeroUltimate = function (hero) {
     if (!hero || !hero.alive) return;
     if (!this.isHeroUltimateUnlocked(hero)) { hero.ultimateCd = hero.ultimateMax; return; }
+    if (this.isSpiritLineMode() && hero.spiritLineV2) {
+      this.castSpiritLineV2Ultimate(hero);
+      return;
+    }
     var enemies = [];
     for (var i = 0; i < this.enemies.length; i++) {
       if (this.enemies[i] && !this.enemies[i].dead) enemies.push(this.enemies[i]);
@@ -3185,6 +5272,8 @@
         this.zones.push({ type: 'starImpact', x: selectedStarTarget.x, y: selectedStarTarget.y - 18, r: 42, color: color, life: .36, maxLife: .36 });
       }
       this.shake = Math.max(this.shake, valueOr(ultimate.shake, 5));
+    } else if (hero.type === 'nuba') {
+      if (!this.castNubaUltimate(hero, enemies, ultimate, atk)) { hero.ultimateCd = 1; return; }
     } else if (hero.type === 'qingyi') {
       this.beginWallUltimateMoment(hero, '万灯归阵！', '#9ef8ff');
       var exposeDuration = valueOr(ultimate.exposeDuration, 5);
@@ -3212,7 +5301,10 @@
       this.shake = Math.max(this.shake, valueOr(ultimate.shake, 3));
     }
 
-    hero.ultimateCd = hero.ultimateMax;
+    var nubaCooldownFactor = hero.type === 'nuba'
+      ? (this.rogueLevel('N04') >= 1 ? .85 : 1) * (this.nubaStarLevel(hero) >= 10 ? .90 : 1)
+      : 1;
+    hero.ultimateCd = hero.ultimateMax * nubaCooldownFactor;
     hero.flash = .18;
     hero.attackAnim = .55;
     var wallUltimateSfx = hero.type === 'hongyi' ? 'ultimateHongyi' : hero.type === 'huangjin' ? 'ultimateHuangjin' : hero.type === 'xuanya' ? 'ultimateXuanya' : null;
@@ -3298,14 +5390,311 @@
     hero.flash = .18; hero.attackAnim = .55; this.audio.tone('bell'); this.shake = 4;
   };
 
+  // 1-2 新版三英雄：基础攻击和默认连携独立于旧城墙技能树。
+  // 所有局内强化都只读取 V2 专属牌，避免旧黄巾控场、红衣灼烧、玄鸦飞刀逻辑串入试验关。
+  Game.prototype.spiritLineV2Level = function (id) {
+    return this.isSpiritLineMode() ? this.rogueLevel(id) : 0;
+  };
+
+  Game.prototype.spiritLineV2TargetsInCone = function (hero, target, radius, angleDegrees) {
+    if (!hero || !target) return [];
+    var dx = target.x - hero.x, dy = target.y - hero.y;
+    var len = Math.sqrt(dx * dx + dy * dy) || 1;
+    var ux = dx / len, uy = dy / len;
+    var minDot = Math.cos((angleDegrees || 90) * Math.PI / 360);
+    var list = [];
+    for (var i = 0; i < this.enemies.length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead || enemy.lineSector !== hero.lineSlot) continue;
+      var ex = enemy.x - hero.x, ey = enemy.y - hero.y;
+      var d = Math.sqrt(ex * ex + ey * ey) || 1;
+      if (d > radius) continue;
+      if ((ex * ux + ey * uy) / d < minDot) continue;
+      list.push({ enemy: enemy, distance: d });
+    }
+    list.sort(function (a, b) { return a.distance - b.distance; });
+    return list;
+  };
+
+  Game.prototype.spiritLineV2ChooseTargets = function (hero, firstTarget, count, independent) {
+    var list = [], used = {}, candidates = [];
+    if (firstTarget && !firstTarget.dead) {
+      list.push(firstTarget);
+      used[firstTarget.id] = true;
+    }
+    for (var i = 0; i < this.enemies.length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead || enemy.lineSector !== hero.lineSlot || used[enemy.id]) continue;
+      var d = distance(hero.x, hero.y, enemy.x, enemy.y);
+      if (d <= hero.attackRange + 80) candidates.push({ enemy: enemy, score: this.wallEnemyDistanceToDefense(enemy) + d * .08 });
+    }
+    candidates.sort(function (a, b) { return a.score - b.score; });
+    for (var j = 0; list.length < count && j < candidates.length; j++) {
+      if (!independent && list.length) { list.push(list[0]); continue; }
+      list.push(candidates[j].enemy);
+    }
+    while (list.length < count && firstTarget) list.push(firstTarget);
+    return list;
+  };
+
+  Game.prototype.addSpiritLineV2HuangjinShield = function (hero, amount) {
+    if (!hero || amount <= 0) return;
+    var hadShield = hero.shield > .5 && hero.spiritLineShieldTime > 0;
+    var cap = this.heroAttackPower(hero) * 1.8;
+    hero.shield = Math.min(cap, Math.max(0, hero.shield || 0) + amount);
+    hero.spiritLineShieldTime = 6;
+    hero.spiritLineShieldBurstReady = true;
+    hero.shieldFlash = .42;
+    if (this.spiritLineV2Level('V2H02') >= 2) {
+      this.damageArea(hero.x, hero.y - 20, 70, this.heroAttackPower(hero) * .35, hero, null, { impact: true, noRune: true });
+      this.zones.push({ type: 'ring', x: hero.x, y: hero.y - 24, r: 70, color: '#f4c85b', life: .32, maxLife: .32 });
+      this.floatText(hero.x, hero.y - 112, hadShield ? '镇甲刷新' : '镇甲生成', C.gold, 17, { life: .65, bold: true, rise: 12 });
+    }
+  };
+
+  Game.prototype.finishSpiritLineV2HuangjinShield = function (hero) {
+    if (!hero || !hero.spiritLineShieldBurstReady) return;
+    hero.spiritLineShieldBurstReady = false;
+    if (this.spiritLineV2Level('V2H02') < 3) return;
+    this.damageArea(hero.x, hero.y - 20, 90, this.heroAttackPower(hero) * .45, hero, null, { impact: true, noRune: true });
+    this.zones.push({ type: 'ring', x: hero.x, y: hero.y - 22, r: 90, color: '#f4c85b', life: .48, maxLife: .48 });
+    this.floatText(hero.x, hero.y - 118, '镇甲爆开', C.gold, 18, { life: .72, bold: true, rise: 14 });
+  };
+
+  Game.prototype.updateSpiritLineV2HeroState = function (hero, dt) {
+    if (hero.type === 'huangjin') {
+      hero.spiritLineShieldTime = Math.max(0, (hero.spiritLineShieldTime || 0) - dt);
+      if (hero.spiritLineShieldTime <= 0 && hero.spiritLineShieldBurstReady) {
+        hero.shield = 0;
+        this.finishSpiritLineV2HuangjinShield(hero);
+      } else if (hero.spiritLineShieldTime > 0 && hero.shield <= .5 && hero.spiritLineShieldBurstReady) {
+        this.finishSpiritLineV2HuangjinShield(hero);
+        hero.spiritLineShieldTime = 0;
+      }
+    } else if (hero.type === 'xuanya') {
+      hero.spiritLineXuanyaEmpoweredTime = Math.max(0, (hero.spiritLineXuanyaEmpoweredTime || 0) - dt);
+      hero.spiritLineXuanyaEmpoweredFlash = Math.max(0, (hero.spiritLineXuanyaEmpoweredFlash || 0) - dt);
+    } else if (hero.type === 'hongyi') {
+      hero.spiritLineLanceFlash = Math.max(0, (hero.spiritLineLanceFlash || 0) - dt);
+    }
+  };
+
+  Game.prototype.releaseSpiritLineV2Attack = function (hero, target) {
+    if (!hero || !target || target.dead) return;
+    hero.attackCount = (hero.attackCount || 0) + 1;
+    var attackPower = this.heroAttackPower(hero);
+    var angle = Math.atan2(target.y - hero.y, target.x - hero.x);
+
+    if (hero.type === 'huangjin') {
+      var shielded = hero.shield > .5 && hero.spiritLineShieldTime > 0;
+      var huangjinDamage = attackPower * (.85 + (this.spiritLineV2Level('V2H01') >= 1 ? .25 : 0) + (shielded && this.spiritLineV2Level('V2H02') >= 1 ? .25 : 0));
+      var huangjinTargets = this.spiritLineV2TargetsInCone(hero, target, 160, 90);
+      var huangjinDealt = 0;
+      for (var h = 0; h < huangjinTargets.length; h++) {
+        huangjinDealt += this.damageEnemy(huangjinTargets[h].enemy, huangjinDamage, hero, { impact: true, noRune: true }) || 0;
+      }
+      if (huangjinDealt > 0) this.addSpiritLineV2HuangjinShield(hero, huangjinDealt * .25);
+      this.zones.push({ type: 'meleeSlash', x: hero.x, y: hero.y - 28, angle: angle, r: 86, color: C.gold, life: .38, maxLife: .38, age: 0, vfxRow: 1 });
+      if (this.spiritLineV2Level('V2H01') >= 2) {
+        this.zones.push({ type: 'spiritLineAftershock', x: target.x, y: target.y - 16, r: 72, damage: attackPower * .50, hero: hero.id, angle: angle, life: .50, maxLife: .50, fired: false });
+        this.zones.push({ type: 'ring', x: target.x, y: target.y - 16, r: 72, color: C.gold, life: .50, maxLife: .50 });
+      }
+      this.audio.tone('shoot');
+      return;
+    }
+
+    if (hero.type === 'xuanya') {
+      var empowered = hero.spiritLineXuanyaEmpoweredTime > 0;
+      hero.spiritLineXuanyaEmpoweredTime = 0;
+      var xuanDamage = attackPower * (this.spiritLineV2Level('V2X01') >= 1 ? 1.20 : 1) * (empowered ? 1.50 : 1);
+      var xuanAngle = this.spiritLineV2Level('V2X01') >= 2 ? 165 : 120;
+      var xuanTargets = this.spiritLineV2TargetsInCone(hero, target, 150, xuanAngle);
+      var killed = [], hits = 0;
+      for (var x = 0; x < xuanTargets.length; x++) {
+        var xuanEnemy = xuanTargets[x].enemy;
+        var xuanDealt = this.damageEnemy(xuanEnemy, xuanDamage, hero, { impact: true, noRune: true }) || 0;
+        if (xuanDealt > 0) this.healHero(hero, xuanDealt * .15, hero);
+        hits++;
+        if (xuanEnemy.dead) killed.push({ x: xuanEnemy.x, y: xuanEnemy.y });
+      }
+      if (killed.length) {
+        hero.spiritLineXuanyaEmpoweredTime = 4;
+        hero.spiritLineXuanyaEmpoweredFlash = .55;
+        this.floatText(hero.x, hero.y - 116, '饮血 · 追斩', '#ff866f', 18, { life: .70, bold: true, rise: 13 });
+      }
+      this.zones.push({ type: 'meleeSlash', x: hero.x, y: hero.y - 30, angle: angle, r: 118, color: empowered ? '#ff8d72' : '#f6e7c0', life: .42, maxLife: .42, age: 0, vfxRow: 0 });
+      if (this.spiritLineV2Level('V2X01') >= 3 && hits >= 3) {
+        var crescentX = hero.x + Math.cos(angle) * 86;
+        var crescentY = hero.y - 28 + Math.sin(angle) * 86;
+        this.zones.push({ type: 'spiritLineCrescent', x: crescentX, y: crescentY, r: 72, damage: attackPower * .80, hero: hero.id, life: .14, maxLife: .14, fired: false });
+        this.zones.push({ type: 'xuanSlash', x: hero.x, y: hero.y - 30, tx: crescentX, ty: crescentY, color: '#f6e7c0', life: .30, maxLife: .30, primary: false, bright: true, age: 0 });
+      }
+      if (this.spiritLineV2Level('V2X02') >= 1) {
+        for (var k = 0; k < killed.length; k++) this.spawnSpiritLineV2BloodZone(hero, killed[k].x, killed[k].y);
+      }
+      this.audio.tone('shoot');
+      return;
+    }
+
+    // 红衣：每轮基础三羽，四枚符印累计满后追加贯日符。没有基础灼烧/火区。
+    var redLevel = this.spiritLineV2Level('V2R01');
+    var featherCount = redLevel >= 1 ? 4 : 3;
+    var independent = redLevel >= 2;
+    var redTargets = this.spiritLineV2ChooseTargets(hero, target, featherCount, independent);
+    for (var r = 0; r < redTargets.length; r++) {
+      var redTarget = redTargets[r];
+      this.launchSpiritLineV2HongyiProjectile(hero, redTarget, attackPower * .45, {
+        lastFeather: redLevel >= 3 && r === redTargets.length - 1,
+        speed: 620, delay: r * .08,
+        color: C.fire
+      });
+    }
+    hero.spiritLineVolley = (hero.spiritLineVolley || 0) + 1;
+    var lanceNeed = this.spiritLineV2Level('V2R02') >= 1 ? 3 : 4;
+    if (hero.spiritLineVolley >= lanceNeed) {
+      hero.spiritLineVolley = 0;
+      hero.spiritLineLanceFlash = .48;
+      this.launchSpiritLineV2HongyiProjectile(hero, target, attackPower * .70, {
+        lance: true,
+        speed: 760,
+        color: '#ffd46e',
+        maxDistance: 930,
+        sideFeathers: this.spiritLineV2Level('V2R02') >= 2,
+        finishSplash: this.spiritLineV2Level('V2R02') >= 3
+      });
+      this.floatText(hero.x, hero.y - 116, '贯日符', '#ffd46e', 20, { life: .72, bold: true, rise: 14 });
+    }
+    this.zones.push({ type: 'xuanCast', x: hero.x, y: hero.y - 58, r: 23, color: C.fire, life: .20, maxLife: .20 });
+    this.audio.tone('shoot');
+  };
+
+  Game.prototype.launchSpiritLineV2HongyiProjectile = function (hero, target, damage, options) {
+    if (!hero || !target || target.dead) return;
+    options = options || {};
+    var startX = options.startX == null ? hero.x : options.startX;
+    var startY = options.startY == null ? hero.y - 48 : options.startY;
+    var projectile = {
+      x: startX, y: startY, prevX: startX, prevY: startY,
+      target: target.id, hero: hero.id, type: 'hongyiFan', spiritLineV2: true,
+      spiritLineKind: options.lance ? 'lance' : 'feather', speed: options.speed || 620,
+      damage: damage, color: options.color || C.fire, r: options.lance ? 8 : 6,
+      hitWidth: options.lance ? 12 : 8, life: 2.2, age: 0, primary: true,
+      launchDelay: Math.max(0, options.delay || 0),
+      lastFeather: !!options.lastFeather, sideFeathers: !!options.sideFeathers,
+      finishSplash: !!options.finishSplash, maxDistance: options.maxDistance || hero.attackRange,
+      hitIds: [], aimX: target.x, aimY: target.y
+    };
+    this.prepareProjectileFreeFlight(projectile, target, projectile.maxDistance);
+    this.projectiles.push(projectile);
+  };
+
+  Game.prototype.spawnSpiritLineV2MeteorScatter = function (hero, x, y) {
+    if (!hero) return;
+    for (var i = 0; i < 6; i++) {
+      var angle = -Math.PI / 2 + i * Math.PI / 3;
+      var aim = { x: x + Math.cos(angle) * 175, y: y + Math.sin(angle) * 175, dead: false };
+      this.launchSpiritLineV2HongyiProjectile(hero, aim, this.heroAttackPower(hero) * .40, {
+        startX: x, startY: y, speed: 760, color: '#ffb45c', maxDistance: 180
+      });
+    }
+    this.floatText(x, y - 74, '坠天散羽', '#ffd46e', 18, { life: .7, bold: true, rise: 12 });
+  };
+
+  Game.prototype.spiritLineV2ProjectileHits = function (projectile) {
+    var hits = [], seen = {}, ax = projectile.prevX == null ? projectile.x : projectile.prevX;
+    var ay = projectile.prevY == null ? projectile.y : projectile.prevY;
+    var bx = projectile.x, by = projectile.y;
+    for (var known = 0; known < (projectile.hitIds || []).length; known++) seen[projectile.hitIds[known]] = true;
+    for (var i = 0; i < this.enemies.length; i++) {
+      var enemy = this.enemies[i];
+      if (!enemy || enemy.dead || seen[enemy.id]) continue;
+      // 碰撞半径严格贴合羽刃 / 符枪宽度，避免出现特效没擦到却受击的情况。
+      var hitRadius = Math.max(9, (projectile.hitWidth || projectile.r || 6) + (enemy.size || 1) * 9);
+      var d2 = this.segmentDistanceSquared(enemy.x, enemy.y - 18, ax, ay, bx, by);
+      if (d2 <= hitRadius * hitRadius) hits.push(enemy);
+    }
+    hits.sort(function (a, b) {
+      return dist2(a.x, a.y, ax, ay) - dist2(b.x, b.y, ax, ay);
+    });
+    return hits;
+  };
+
+  Game.prototype.spawnSpiritLineV2BloodZone = function (hero, x, y) {
+    if (!hero) return;
+    var level = this.spiritLineV2Level('V2X02');
+    if (level < 1) return;
+    var radius = 54 * (level >= 2 ? 1.20 : 1);
+    this.zones.push({
+      type: 'spiritLineBloodZone', x: x, y: y - 16, r: radius, hero: hero.id,
+      tick: 0, life: 1.5, maxLife: 1.5, damage: this.heroAttackPower(hero) * .30,
+      slowMultiplier: level >= 2 ? .65 : .80, explode: level >= 3, fired: false
+    });
+    this.zones.push({ type: 'ring', x: x, y: y - 16, r: radius, color: '#c65d58', life: 1.5, maxLife: 1.5 });
+  };
+
+  Game.prototype.updateSpiritLineV2Projectile = function (projectile, dt) {
+    projectile.life -= dt;
+    projectile.age = (projectile.age || 0) + dt;
+    if (projectile.life <= 0 || !this.advanceProjectileFreeFlight(projectile, dt)) {
+      this.finishSpiritLineV2Projectile(projectile);
+      return true;
+    }
+    this.emitHongyiProjectileTrail(projectile, dt);
+    var hits = this.spiritLineV2ProjectileHits(projectile);
+    for (var i = 0; i < hits.length; i++) {
+      var enemy = hits[i];
+      projectile.hitIds.push(enemy.id);
+      this.damageEnemy(enemy, projectile.damage, this.getHero(projectile.hero), { impact: true, noRune: true });
+      this.zones.push({ type: 'orbImpact', x: enemy.x, y: enemy.y - 20, r: projectile.spiritLineKind === 'lance' ? 54 : 38, vfxRow: 0, life: .25, maxLife: .25, age: 0, hongyi: true });
+      if (projectile.lastFeather) {
+        this.damageArea(enemy.x, enemy.y, 55, this.heroAttackPower(this.getHero(projectile.hero)) * .35, this.getHero(projectile.hero), null, { impact: true, noRune: true });
+        this.zones.push({ type: 'ring', x: enemy.x, y: enemy.y - 16, r: 55, color: C.fire, life: .28, maxLife: .28 });
+      }
+      if (projectile.sideFeathers) {
+        var owner = this.getHero(projectile.hero);
+        if (owner) {
+          var dx = projectile.freeVx || 0, dy = projectile.freeVy || -1;
+          var px = -dy, py = dx;
+          for (var side = -1; side <= 1; side += 2) {
+            var sideAim = { x: enemy.x + px * side * 72 + dx * 64, y: enemy.y + py * side * 72 + dy * 64, id: enemy.id, dead: false };
+            this.launchSpiritLineV2HongyiProjectile(owner, sideAim, this.heroAttackPower(owner) * .35, { speed: 680, color: '#ff994c', maxDistance: 150 });
+          }
+        }
+      }
+      if (projectile.spiritLineKind !== 'lance') return true;
+      if (enemy.elite || enemy.type === 'boss') projectile.finishSplash = true;
+    }
+    return false;
+  };
+
+  Game.prototype.finishSpiritLineV2Projectile = function (projectile) {
+    if (!projectile || projectile.finished) return;
+    projectile.finished = true;
+    if (projectile.spiritLineKind !== 'lance' || !projectile.finishSplash) return;
+    var owner = this.getHero(projectile.hero);
+    if (!owner) return;
+    this.damageArea(projectile.x, projectile.y, 90, this.heroAttackPower(owner) * .60, owner, null, { impact: true, noRune: true });
+    this.zones.push({ type: 'ring', x: projectile.x, y: projectile.y, r: 90, color: '#ffd46e', life: .42, maxLife: .42 });
+  };
+
   Game.prototype.releaseHeroAttack = function (hero, target) {
     hero.attackAnim = hero.attackRecoveryDuration || .34;
     hero.hitHold = .06;
+    if (this.isSpiritLineMode() && hero.spiritLineV2) {
+      this.releaseSpiritLineV2Attack(hero, target);
+      return;
+    }
     if (WALL_MODE) {
       var wallAim = target || this.wallUntargetedAimPoint(hero);
       if (hero.type === 'huangjin') {
         this.releaseWallHuangjinAttack(hero, wallAim);
         this.onRuneBasicAttack(hero, wallAim && wallAim.id ? wallAim : null, wallAim, this.heroAttackPower(hero));
+        return;
+      }
+      if (hero.type === 'nuba') {
+        this.releaseNubaAttack(hero, target, wallAim);
+        this.onRuneBasicAttack(hero, target && target.id ? target : null, wallAim, this.heroAttackPower(hero));
+        this.audio.tone('shoot');
         return;
       }
       hero.attackCount = (hero.attackCount || 0) + 1;
@@ -3934,6 +6323,110 @@
   Game.prototype.isHongyiProjectile = function (type) {
     return type === 'hongyi' || type === 'hongyiLotus' || type === 'hongyiFan' ||
       type === 'hongyiPierce' || type === 'hongyiEmber';
+  };
+
+  Game.prototype.emitHongyiProjectileTrail = function (projectile, dt) {
+    if (!projectile || !this.isHongyiProjectile(projectile.type) || (projectile.launchDelay || 0) > 0) return;
+    var prevX = projectile.prevX == null ? projectile.x : projectile.prevX;
+    var prevY = projectile.prevY == null ? projectile.y : projectile.prevY;
+    var dx = projectile.x - prevX;
+    var dy = projectile.y - prevY;
+    var len = Math.sqrt(dx * dx + dy * dy);
+    if (len < .5) {
+      dx = projectile.freeVx || 0;
+      dy = projectile.freeVy || -1;
+      len = Math.sqrt(dx * dx + dy * dy) || 1;
+    }
+    var ux = dx / len, uy = dy / len;
+    var angle = Math.atan2(uy, ux);
+    var sideX = -uy, sideY = ux;
+    var isLotus = !!projectile.lotus || projectile.type === 'hongyiLotus';
+    var isFan = projectile.type === 'hongyiFan';
+    var rate = isLotus ? 58 : (isFan ? 34 : 44);
+    projectile.hongyiTrailEmit = (projectile.hongyiTrailEmit || 0) + dt * rate;
+    var count = Math.min(5, Math.floor(projectile.hongyiTrailEmit));
+    projectile.hongyiTrailEmit -= count;
+    var cap = 260;
+    for (var i = 0; i < count && this.particles.length < cap; i++) {
+      var t = count <= 1 ? Math.random() : (i + Math.random() * .6) / count;
+      var back = (isLotus ? 28 : 20) + Math.random() * (isFan ? 14 : 24);
+      var side = (Math.random() - .5) * (isLotus ? 20 : 13);
+      var life = (isLotus ? .34 : .25) + Math.random() * (isLotus ? .18 : .15);
+      this.particles.push({
+        kind: 'hongyiTrail',
+        x: prevX + dx * t - ux * back + sideX * side,
+        y: prevY + dy * t - uy * back + sideY * side,
+        vx: -ux * (34 + Math.random() * 42) + sideX * (Math.random() - .5) * 34,
+        vy: -uy * (34 + Math.random() * 42) + sideY * (Math.random() - .5) * 34 - (18 + Math.random() * 18),
+        life: life, max: life,
+        size: (isLotus ? 13 : 8) + Math.random() * (isFan ? 4 : 8),
+        stretch: isLotus ? 2.1 : (isFan ? 1.55 : 1.85),
+        angle: angle + (Math.random() - .5) * .32,
+        color: isLotus ? '#ffdf73' : '#ff8b36'
+      });
+    }
+    var sparkChance = (isLotus ? 22 : 14) * dt;
+    while (sparkChance > 0 && Math.random() < Math.min(1, sparkChance) && this.particles.length < cap) {
+      sparkChance -= 1;
+      var sparkBack = 8 + Math.random() * 24;
+      var sparkSide = (Math.random() - .5) * (isLotus ? 30 : 20);
+      var sparkLife = .24 + Math.random() * .24;
+      this.particles.push({
+        kind: 'hongyiSpark',
+        x: projectile.x - ux * sparkBack + sideX * sparkSide,
+        y: projectile.y - uy * sparkBack + sideY * sparkSide,
+        vx: -ux * (40 + Math.random() * 90) + sideX * (Math.random() - .5) * 80,
+        vy: -uy * (30 + Math.random() * 70) + sideY * (Math.random() - .5) * 70 - 36,
+        life: sparkLife, max: sparkLife,
+        size: (isLotus ? 2.8 : 2) + Math.random() * (isLotus ? 3.2 : 2.6),
+        color: Math.random() < .32 ? '#fff2a6' : (isLotus ? '#ffb33e' : '#ff6635')
+      });
+    }
+  };
+
+  Game.prototype.emitHongyiHitParticles = function (x, y, projectile) {
+    if (!projectile || !this.isHongyiProjectile(projectile.type)) return;
+    var prevX = projectile.prevX == null ? projectile.x : projectile.prevX;
+    var prevY = projectile.prevY == null ? projectile.y : projectile.prevY;
+    var angle = Math.atan2(y - prevY, x - prevX);
+    if (!isFinite(angle)) angle = projectile.freeVx != null ? Math.atan2(projectile.freeVy, projectile.freeVx) : -Math.PI / 2;
+    var ux = Math.cos(angle), uy = Math.sin(angle);
+    var sideX = -uy, sideY = ux;
+    var isLotus = !!projectile.lotus || projectile.type === 'hongyiLotus';
+    var isFan = projectile.type === 'hongyiFan';
+    var count = isLotus ? 26 : (isFan ? 12 : 18);
+    var cap = 280;
+    for (var i = 0; i < count && this.particles.length < cap; i++) {
+      var spread = (Math.random() - .5) * Math.PI * (isLotus ? 1.45 : 1.1);
+      var speed = (isLotus ? 145 : 105) + Math.random() * (isLotus ? 150 : 120);
+      var a = angle + Math.PI + spread;
+      var life = .30 + Math.random() * (isLotus ? .34 : .24);
+      this.particles.push({
+        kind: 'hongyiHitSpark',
+        x: x + sideX * (Math.random() - .5) * 20,
+        y: y + sideY * (Math.random() - .5) * 14,
+        vx: Math.cos(a) * speed + ux * 28,
+        vy: Math.sin(a) * speed - 48,
+        life: life, max: life,
+        size: (isLotus ? 3.2 : 2.4) + Math.random() * (isLotus ? 4.2 : 3.2),
+        color: Math.random() < .24 ? '#fff5bc' : (Math.random() < .58 ? '#ff973a' : '#ff4e2d')
+      });
+    }
+    for (var glow = 0; glow < (isLotus ? 5 : 3) && this.particles.length < cap; glow++) {
+      var glowLife = .22 + Math.random() * .16;
+      this.particles.push({
+        kind: 'hongyiTrail',
+        x: x - ux * (6 + glow * 4) + sideX * (Math.random() - .5) * 24,
+        y: y - uy * (6 + glow * 4) + sideY * (Math.random() - .5) * 18,
+        vx: -ux * (20 + Math.random() * 40) + sideX * (Math.random() - .5) * 48,
+        vy: -uy * (20 + Math.random() * 40) - 28,
+        life: glowLife, max: glowLife,
+        size: (isLotus ? 20 : 14) + Math.random() * 10,
+        stretch: isLotus ? 1.6 : 1.35,
+        angle: angle + Math.PI + (Math.random() - .5) * .8,
+        color: isLotus ? '#ffdf73' : '#ff8b36'
+      });
+    }
   };
 
   Game.prototype.hongyiSplashStats = function (projectile, wasBurning) {
@@ -4833,6 +7326,25 @@
   };
 
   Game.prototype.projectileHit = function (p, target) {
+    if (p.type === 'protagonistSigil' || p.type === 'protagonistTalisman') {
+      this.zones.push({ type: 'orbImpact', x: target.x, y: target.y - 20, r: 46, vfxRow: 2, life: .28, maxLife: .28, age: 0 });
+      this.damageEnemy(target, p.damage, null, { impact: true });
+      if ((this.protagonistPierceLevel || 0) > 0) {
+        var side = null, sideD = Infinity;
+        for (var si = 0; si < this.enemies.length; si++) {
+          var other = this.enemies[si];
+          if (!other || other.dead || other.id === target.id) continue;
+          var d = distance(other.x, other.y, target.x, target.y);
+          if (d <= 104 && d < sideD) { side = other; sideD = d; }
+        }
+        if (side) {
+          this.damageEnemy(side, p.damage * (.35 + (this.protagonistPierceLevel || 0) * .10), null, { impact: true });
+          this.zones.push({ type: 'ring', x: side.x, y: side.y - 20, r: 28, color: '#8ff4ff', life: .24, maxLife: .24 });
+        }
+      }
+      this.burst(target.x, target.y, '#8ff4ff', 7);
+      return;
+    }
     var hero = this.getHero(p.hero);
     if (!hero) return;
     var wasBurning = target.burn > 0;
@@ -4855,8 +7367,10 @@
       var hongyiHit = this.isHongyiProjectile(p.type);
       this.zones.push({
         type: 'orbImpact', x: target.x, y: target.y - 20, r: hongyiHit ? (p.lotus ? 76 : 54) : 44,
-        vfxRow: p.vfxRow || 0, life: .28, maxLife: .28, age: 0
+        vfxRow: p.vfxRow || 0, life: .28, maxLife: .28, age: 0,
+        hongyi: hongyiHit, lotus: !!p.lotus
       });
+      if (hongyiHit) this.emitHongyiHitParticles(target.x, target.y - 20, p);
       this.damageEnemy(target, p.damage, hero, { impact: true });
       if (hongyiHit) this.applyHongyiProjectileImpact(hero, target, p, wasBurning);
       this.burst(target.x, target.y, p.color, 6);
@@ -5067,6 +7581,88 @@
     hero.flash = .18; hero.attackAnim = .55; this.audio.tone('bell'); this.shake = Math.max(this.shake, 4);
   };
 
+  Game.prototype.spiritLineRangedTarget = function (enemy) {
+    if (!enemy || enemy.attackType !== 'ranged') return null;
+    var best = null, bestD = Infinity;
+    for (var i = 0; i < this.heroes.length; i++) {
+      var hero = this.heroes[i];
+      if (!hero.lineUnlocked || !hero.alive || hero.lineSlot !== enemy.lineSector) continue;
+      var d = distance(enemy.x, enemy.y, hero.x, hero.y);
+      if (d <= (enemy.attackRange || 180) && d < bestD) { best = hero; bestD = d; }
+    }
+    return best;
+  };
+
+  Game.prototype.updateSpiritLineEnemyAction = function (enemy, dt) {
+    if (enemy.attackWindup > 0) {
+      enemy.attackWindup -= dt;
+      if (enemy.attackWindup <= 0) {
+        var pendingHero = this.getHero(enemy.pendingHero);
+        enemy.pendingHero = null;
+        if (pendingHero && pendingHero.alive && pendingHero.lineUnlocked && distance(enemy.x, enemy.y, pendingHero.x, pendingHero.y) <= (enemy.attackRange || 66) + 24) {
+          this.damageHero(pendingHero, enemy.damage, enemy);
+          enemy.hitHold = .035;
+          enemy.attackAnim = enemy.attackDuration;
+        }
+      }
+      return;
+    }
+    var targetHero = null;
+    if (enemy.blocker) {
+      targetHero = this.getHero(enemy.blocker);
+      if (!targetHero || !targetHero.alive || !targetHero.lineUnlocked || targetHero.lineSlot !== enemy.lineSector || distance(enemy.x, enemy.y, targetHero.x, targetHero.y) > 155) {
+        enemy.blocker = null;
+        targetHero = null;
+      }
+    }
+    if (!targetHero) targetHero = this.spiritLineRangedTarget(enemy);
+
+    if (targetHero) {
+      enemy.breaking = false;
+      var targetDistance = distance(enemy.x, enemy.y, targetHero.x, targetHero.y);
+      var attackRange = enemy.attackRange || 66;
+      if (targetDistance <= attackRange) {
+        if (enemy.attackCd <= 0) {
+          enemy.attackCd = enemy.attackRate;
+          if (enemy.attackWindupDuration > 0) {
+            enemy.pendingHero = targetHero.id;
+            enemy.attackWindup = enemy.attackWindupDuration;
+            enemy.attackAnim = 0;
+          } else {
+            this.damageHero(targetHero, enemy.damage, enemy);
+            enemy.hitHold = .035;
+            enemy.attackAnim = enemy.attackDuration;
+          }
+        }
+      } else if (enemy.freeze <= 0 && enemy.blocker) {
+        // 被近战阻挡的敌人只向阻挡者贴近；远程不会追逐，射程外继续沿路前进。
+        var d = Math.max(1, targetDistance), step = enemy.speed * this.wallEnemyMoveSpeedMultiplier(enemy) * dt;
+        enemy.x += (targetHero.x - enemy.x) / d * step;
+        enemy.y += (targetHero.y - enemy.y) / d * step;
+        enemy.moving = true;
+      } else if (!enemy.blocker && enemy.freeze <= 0) {
+        this.advanceWallEnemyAlongPath(enemy, dt, enemy.speed * this.wallEnemyMoveSpeedMultiplier(enemy));
+        enemy.moving = true;
+      }
+      return;
+    }
+
+    if (this.wallEnemyFootY(enemy) >= WALL_DEFENSE_LINE_Y) {
+      enemy.breaking = true;
+      enemy.y = this.wallEnemyBreachCenterY(enemy);
+      if (enemy.attackCd <= 0) {
+        this.applyWallDamage(enemy.damage, enemy.x, WALL_DEFENSE_LINE_Y);
+        enemy.attackCd = enemy.attackRate;
+        enemy.attackAnim = enemy.attackDuration;
+        if (this.baseHp <= 0) { this.baseHp = 0; this.endBattle(false); }
+      }
+    } else if (enemy.freeze <= 0) {
+      enemy.breaking = false;
+      this.advanceWallEnemyAlongPath(enemy, dt, enemy.speed * this.wallEnemyMoveSpeedMultiplier(enemy));
+      enemy.moving = true;
+    }
+  };
+
   Game.prototype.updateWallEnemies = function (dt) {
     for (var i = this.enemies.length - 1; i >= 0; i--) {
       var enemy = this.enemies[i];
@@ -5081,6 +7677,7 @@
       enemy.moving = false;
       enemy.slow = Math.max(0, (enemy.slow || 0) - dt);
       enemy.freeze = Math.max(0, (enemy.freeze || 0) - dt);
+      if (enemy.spiritLineV2StunDamageTaken) enemy.spiritLineV2StunDamageTaken = Math.max(0, enemy.spiritLineV2StunDamageTaken - dt);
       if (enemy.armorBreak) enemy.armorBreak = Math.max(0, enemy.armorBreak - dt);
       if (enemy.flaw) enemy.flaw = Math.max(0, enemy.flaw - dt);
       if (enemy.skillDamageTaken && !enemy.armorBreak) enemy.skillDamageTaken = 0;
@@ -5117,6 +7714,7 @@
       if (enemy.huangjinGatherCd) enemy.huangjinGatherCd = Math.max(0, enemy.huangjinGatherCd - dt);
       if (enemy.huangjinGatherSlow) enemy.huangjinGatherSlow = Math.max(0, enemy.huangjinGatherSlow - dt);
       if (enemy.huangjinHeavySlow) enemy.huangjinHeavySlow = Math.max(0, enemy.huangjinHeavySlow - dt);
+      if (enemy.spiritLineBloodSlow) enemy.spiritLineBloodSlow = Math.max(0, enemy.spiritLineBloodSlow - dt);
       if (enemy.huangjinControlFatigueTime) {
         enemy.huangjinControlFatigueTime = Math.max(0, enemy.huangjinControlFatigueTime - dt);
         if (enemy.huangjinControlFatigueTime <= 0) enemy.huangjinControlFatigue = 0;
@@ -5149,6 +7747,15 @@
       if (enemy.hpLag == null) enemy.hpLag = enemy.hp;
       else if (enemy.hpLag > enemy.hp) {
         enemy.hpLag += (enemy.hp - enemy.hpLag) * Math.min(1, dt * 7.5);
+      }
+      if (this.isSpiritLineMode()) {
+        this.updateSpiritLineEnemyAction(enemy, dt);
+        if (this.state !== 'battle') return;
+        continue;
+      }
+      if (enemy.nubaRescueThreat && this.nubaRescue && !this.nubaRescue.complete) {
+        enemy.slow = 0; enemy.freeze = 0; enemy.huangjinSuppressTime = 0; enemy.huangjinSuppressStacks = 0;
+        enemy.huangjinGatherSlow = 0; enemy.huangjinHeavySlow = 0; enemy.blocker = null;
       }
       if (this.wallEnemyFootY(enemy) >= WALL_DEFENSE_LINE_Y) {
         var justReachedWall = !enemy.breaking;
@@ -5527,6 +8134,7 @@
 
   Game.prototype.applyWallDamage = function (amount, x, y) {
     var incoming = Math.max(0, amount || 0);
+    if (this.isFirstStageTutorialActive() && !this.firstStageTutorial.summoned) incoming *= .04;
     var absorbed = 0;
     if ((this.wallShield || 0) > 0) {
       absorbed = Math.min(this.wallShield, incoming);
@@ -5583,7 +8191,7 @@
 
   Game.prototype.soulReturn = function (hero) {
     var deathX = hero.x, deathY = hero.y;
-    var soulAnchor = this.heroSoulAnchor(hero);
+    var soulAnchor = this.isSpiritLineMode() ? this.spiritLineHome(hero) : this.heroSoulAnchor(hero);
     hero.hp = 0; hero.alive = false; hero.respawn = hero.respawnMax; hero.deaths++;
     hero.anchorIndex = hero.soulAnchorIndex == null ? hero.anchorIndex : hero.soulAnchorIndex;
     hero.soulReturn = { fromX: deathX, fromY: deathY, t: 0, duration: .55 };
@@ -5606,9 +8214,9 @@
   };
 
   Game.prototype.respawnHero = function (hero) {
-    if (!ANCHORS[hero.soulAnchorIndex]) hero.soulAnchorIndex = hero.anchorIndex;
-    hero.anchorIndex = hero.soulAnchorIndex;
-    var anchor = this.heroSoulAnchor(hero);
+    if (!this.isSpiritLineMode() && !ANCHORS[hero.soulAnchorIndex]) hero.soulAnchorIndex = hero.anchorIndex;
+    if (!this.isSpiritLineMode()) hero.anchorIndex = hero.soulAnchorIndex;
+    var anchor = this.isSpiritLineMode() ? this.spiritLineHome(hero) : this.heroSoulAnchor(hero);
     hero.x = anchor.x; hero.y = anchor.y; hero.hp = hero.reviveHpRatio ? Math.max(1, hero.maxHp * hero.reviveHpRatio) : hero.maxHp;
     hero.reviveHpRatio = 0; hero.shield = 45; hero.holyShield = 0; hero.holyShieldTime = 0;
     hero.soulReturn = null;
@@ -5619,21 +8227,25 @@
     if (hero.type === 'suwen' && hero.upgrades.passive >= 3) {
       for (var i = 0; i < this.heroes.length; i++) if (this.heroes[i].alive) this.healHero(this.heroes[i], 55, hero);
     }
-    this.message = hero.name + '归阵 · ' + ANCHORS[hero.anchorIndex].name;
+    this.message = hero.name + (this.isSpiritLineMode() ? '归阵 · 重返守备区' : '归阵 · ' + ANCHORS[hero.anchorIndex].name);
     this.messageTime = 1.8; this.audio.tone('bell');
   };
 
   Game.prototype.damageEnemy = function (enemy, amount, source, options) {
-    if (!enemy || enemy.dead) return;
+    if (!enemy || enemy.dead) return 0;
     options = options || {};
     var blockerBeforeHit = this.blockingHero(enemy);
     var qingyiExposedBefore = (enemy.qingyiExposeTime || 0) > 0;
     var qingyiLightBurstReady = !!(source && source.qingyiSynergyBurstReady && (source.qingyiSynergyTime || 0) > 0 && !options.noQingyiLightBurst);
-    var final = amount * this.outgoingDamageMultiplier(source, enemy, options) * (enemy.armorBreak ? 1.25 : 1) *
+    var critical = !!(source && !options.noCrit && Math.random() < clamp(Number(source.critRate) || 0, 0, .95));
+    var criticalMultiplier = critical ? Math.max(1, Number(source.critMultiplier) || 1.5) : 1;
+    var final = amount * this.outgoingDamageMultiplier(source, enemy, options) * criticalMultiplier * (enemy.armorBreak ? 1.25 : 1) *
+      ((enemy.spiritLineV2StunDamageTaken || 0) > 0 ? 1.15 : 1) *
       this.applyRuneBeforeDamage(source, enemy, options);
     var previousHp = enemy.hp;
     if (enemy.hpLag == null) enemy.hpLag = previousHp;
     enemy.hp -= final;
+    if (enemy.nubaRescueThreat && this.nubaRescue && !this.nubaRescue.complete && enemy.hp <= 0) enemy.hp = 1;
     enemy.hpLag = Math.max(enemy.hpLag, previousHp);
     enemy.hpBarTime = 3;
     enemy.hpLagHold = options.impact || options.skill ? .12 : .05;
@@ -5658,7 +8270,8 @@
           source && source.type === 'xuanya' ? 'xuanyaBladeHit' : 'enemyHit';
       this.audio.playSfx(hitSfx);
     }
-    if (options.skill) {
+    if (critical && (options.impact || options.skill)) this.floatText(enemy.x, enemy.y - 82, '暴击 ×' + criticalMultiplier.toFixed(1), '#ffe28b', 18, { life: .58, bold: true, rise: 14 });
+    if (options.skill && !options.noSkillPush && !(enemy.nubaRescueThreat && this.nubaRescue && !this.nubaRescue.complete)) {
       enemy.blocker = null;
       enemy.y = Math.max(0, enemy.y - (enemy.type === 'boss' ? 28 : 56));
     }
@@ -5689,6 +8302,7 @@
         this.zones.push({ type: 'qingyiBurst', x: enemy.x, y: enemy.y - 22, r: 44, color: HERO_META[qingyiBurstSource.type].color, life: .38, maxLife: .38 });
       }
     }
+    return final;
   };
 
   Game.prototype.killEnemy = function (enemy, source, killOptions) {
@@ -5699,6 +8313,21 @@
     var humanBlocker = killOptions.blockerBeforeHit ? this.getHero(killOptions.blockerBeforeHit) : this.blockingHero(enemy);
     if (!humanBlocker || humanBlocker.faction !== '人族') humanBlocker = null;
     enemy.dead = true; this.kills++; this.coins += Math.round(enemy.coin); this.score += Math.round(enemy.xp * 12);
+    // V2 血阵只在阵内敌人死亡时结算一次爆散；爆散击杀不会再触发新的血阵爆散。
+    if (this.isSpiritLineMode()) {
+      for (var bloodZoneIndex = 0; bloodZoneIndex < this.zones.length; bloodZoneIndex++) {
+        var bloodZone = this.zones[bloodZoneIndex];
+        if (!bloodZone || bloodZone.type !== 'spiritLineBloodZone' || !bloodZone.explode || bloodZone.fired) continue;
+        if (dist2(enemy.x, enemy.y - 16, bloodZone.x, bloodZone.y) > bloodZone.r * bloodZone.r) continue;
+        bloodZone.fired = true;
+        bloodZone.life = 0;
+        var bloodOwner = this.getHero(bloodZone.hero);
+        if (bloodOwner) {
+          this.damageArea(bloodZone.x, bloodZone.y, bloodZone.r, this.heroAttackPower(bloodOwner) * .60, bloodOwner, null, { impact: true, noRune: true });
+          this.zones.push({ type: 'ring', x: bloodZone.x, y: bloodZone.y, r: bloodZone.r, color: '#ff8678', life: .38, maxLife: .38 });
+        }
+      }
+    }
     this.gainXuanyaSoul(enemy, killOptions);
     this.waveKills = Math.max(0, this.waveKills || 0) + 1;
     this.waveProgressFlash = .28;
@@ -5766,6 +8395,15 @@
     if (enemy.type !== 'boss') this.audio.playSfx('enemyDie');
     this.impactPause(enemy.type === 'boss' ? .12 : .045, enemy.type === 'boss' ? 14 : 0);
     if (enemy.type === 'boss') { this.shake = 14; this.audio.tone('win'); }
+    if (enemy.eliteRewardEligible && this.phase === 'wave') {
+      var eliteDraw = eliteDrawTuning();
+      var maxOffers = Math.max(0, Math.floor(valueOr(eliteDraw.maxOffersPerBattle, 3)));
+      if (this.eliteDrawOffers < maxOffers) {
+        this.eliteDrawOffers++;
+        this.eliteDrawQueue = this.eliteDrawQueue || [];
+        this.eliteDrawQueue.push({ name: enemy.name, wave: this.wave, x: enemy.x, y: enemy.y });
+      }
+    }
   };
 
   Game.prototype.healHero = function (hero, amount, source) {
@@ -5886,7 +8524,7 @@
     }
     this.spiritLampTimer += dt;
     var intervalBoost = 1 + this.upgradeValue('U05', [.15, .25, .35], 0);
-    var interval = Math.max(.5, (this.spiritLampInterval || 5) / intervalBoost);
+    var interval = Math.max(.5, (this.spiritLampInterval || SPIRIT_LAMP_INTERVAL) / intervalBoost);
     while (this.spiritLampTimer >= interval && this.spiritLampLit < this.spiritLampMax) {
       this.spiritLampTimer -= interval;
       this.spiritLampLit++;
@@ -6045,6 +8683,7 @@
   };
 
   Game.prototype.castSpell = function (key, manual) {
+    if (this.isFirstStageTutorialActive() && !this.firstStageTutorial.skillUnlocked) return false;
     if (!SPELL_META[key] || SPELL_META[key].disabled) return false;
     if (this.spellCd[key] > 0) {
       if (manual) {
@@ -6056,6 +8695,10 @@
     }
     var casted = key === 'wind' ? this.castProtagonistWind(manual) : key === 'rain' ? this.castProtagonistRain(manual) : false;
     if (!casted) return false;
+    if (this.isFirstStageTutorialActive() && key === 'wind') {
+      this.firstStageTutorial.skillCast = true;
+      this.paused = false;
+    }
     this.message = SPELL_META[key].name + ' · 手动释放';
     this.messageTime = 1.6;
     return true;
@@ -6072,6 +8715,22 @@
 
   Game.prototype.gainXp = function (amount) {
     this.xp += amount || 0;
+    if (!this.isSpiritLineMode()) return;
+    // 1-2 的牌由灵识升级驱动，而不是由开局或清波触发。
+    // 怪潮加密后，首级需要约 8 只游魂，后续门槛逐级拉高，避免选牌连续打断战斗。
+    while (this.xp >= this.xpNeed) {
+      this.xp -= this.xpNeed;
+      this.level++;
+      this.pendingLevels++;
+      var xpTuning = this.spiritLineXp || this.spiritLineXpTuning();
+      this.xpNeed = Math.min(xpTuning.maxNeed, Math.ceil(this.xpNeed * xpTuning.growth));
+    }
+    if (this.phase === 'wave' && this.pendingLevels > 0) {
+      this.pendingLevels--;
+      this.message = '灵识升阶 · 选择一张符策';
+      this.messageTime = 3;
+      this.offerSpiritLineCards();
+    }
   };
 
   Game.prototype.updateWaveProgress = function (dt) {
@@ -6110,7 +8769,90 @@
     };
   };
 
+  Game.prototype.makeSpiritLineUnlockCard = function (hero) {
+    return {
+      upgradeId: 'line-unlock-' + hero.type,
+      special: 'spiritUnlock', unlockHero: hero.type,
+      type: 'exclusive', rarity: 'rare', frameRarity: 'rare', maxLevel: 1,
+      hero: hero.id, portraitHero: hero.id, portraitType: hero.type,
+      heroName: hero.name, role: '召来 · 初始御灵', tag: '召来',
+      effectHeroName: hero.name, effectSkillName: '守备降临', effectSkillKind: '召来',
+      title: '召来' + hero.name,
+      desc: hero.name + '降临第 ' + (hero.lineSlot + 1) + ' 守备区，自动接敌；可阻挡 1 名近战敌人。',
+      color: HERO_META[hero.type].color, icon: HERO_META[hero.type].icon
+    };
+  };
+
+  Game.prototype.makeSpiritLineProtagonistCard = function (kind) {
+    var values = {
+      damage: { title: '破煞符', desc: '阵主符箓伤害 +28%。', tag: '阵主', skill: '镇煞符矢' },
+      rate: { title: '连书符', desc: '阵主符箓发射间隔缩短 16%。', tag: '阵主', skill: '镇煞符矢' },
+      pierce: { title: '裂灵符', desc: '阵主符箓命中后额外溅射附近 1 名敌人，造成 45% 伤害。', tag: '阵主', skill: '镇煞符矢' }
+    }[kind];
+    var level = kind === 'damage' ? this.protagonistDamageLevel : kind === 'rate' ? this.protagonistRateLevel : this.protagonistPierceLevel;
+    return {
+      upgradeId: 'line-main-' + kind,
+      special: 'protagonistUpgrade', protagonistKind: kind,
+      type: 'exclusive', rarity: 'common', frameRarity: 'common', maxLevel: 3,
+      hero: null, portraitHero: null, portraitType: null,
+      heroName: '阵主', role: '阵主 · 普攻', tag: values.tag,
+      effectHeroName: '阵主', effectSkillName: values.skill, effectSkillKind: '普攻',
+      title: values.title + (level ? ' +' + (level + 1) : ''), desc: values.desc,
+      color: '#8ff4ff', icon: 1
+    };
+  };
+
+  Game.prototype.unlockSpiritLineHero = function (type, card) {
+    var hero = this.heroByType(type);
+    if (!hero || hero.lineUnlocked) return;
+    var home = this.spiritLineHome(hero);
+    hero.lineUnlocked = true;
+    hero.lineLocked = false;
+    hero.alive = true;
+    hero.hp = hero.maxHp;
+    hero.x = home.x; hero.y = home.y;
+    hero.invuln = 1.2;
+    hero.attackCd = .35;
+    this.upgradeCount++;
+    if (!this.isSpiritLineMode()) this.level = this.upgradeCount;
+    this.burst(hero.x, hero.y - 36, HERO_META[type].color, 26);
+    this.zones.push({ type: 'respawn', x: hero.x, y: hero.y, r: 44, color: HERO_META[type].color, life: .9 });
+    this.floatText(hero.x, hero.y - 126, hero.name + ' · 降临守备区', HERO_META[type].color, 22, { life: 1.2, bold: true, rise: 18 });
+    this.message = hero.name + '已召来 · 守备区开始接敌';
+    this.messageTime = 3;
+    this.audio.playSfx('upgradeRare') || this.audio.tone('bell');
+  };
+
+  Game.prototype.offerSpiritLineCards = function () {
+    this.phase = 'cards';
+    this.spellPress = null; this.dragDeploy = null; this.dragSoul = null;
+    var cards = [], used = {};
+    function add(game, list) {
+      list = shuffle(list.slice());
+      for (var x = 0; x < list.length; x++) if (!used[list[x].id]) {
+        used[list[x].id] = true; cards.push(game.makeUpgradeCard(list[x])); return true;
+      }
+      return false;
+    }
+    // 1-2 的角色全部随布阵进场：牌池没有“召来”，只由阵主和当前三名御灵构成。
+    var exclusive = this.availableUpgradeList('exclusive');
+    while (cards.length < 2 && add(this, exclusive)) {}
+    var mainKinds = shuffle(['damage', 'rate', 'pierce']);
+    for (var m = 0; m < mainKinds.length && cards.length < 3; m++) {
+      var kind = mainKinds[m], level = kind === 'damage' ? this.protagonistDamageLevel : kind === 'rate' ? this.protagonistRateLevel : this.protagonistPierceLevel;
+      if (level < 3) cards.push(this.makeSpiritLineProtagonistCard(kind));
+    }
+    while (cards.length < 3 && add(this, exclusive)) {}
+    if (!cards.length && this.wave >= this.waveMax && this.currentWaveConfig && this.currentWaveConfig.enemies && this.currentWaveConfig.enemies.boss) {
+      cards = [this.makeFinalWaveFallbackCard()];
+    }
+    if (!cards.length) { this.phase = 'wave'; return; }
+    this.pendingCards = cards.slice(0, 3);
+    this.audio.playSfx('uiCardOpen') || this.audio.tone('bell');
+  };
+
   Game.prototype.offerCards = function () {
+    if (this.isSpiritLineMode()) { this.offerSpiritLineCards(); return; }
     this.phase = 'cards'; this.pendingLevels = Math.max(0, this.pendingLevels - 1);
     this.spellPress = null; this.dragDeploy = null; this.dragSoul = null;
     var heroes = this.heroes.slice().filter(function (h) {
@@ -6246,7 +8988,11 @@
   };
 
   Game.prototype.hasHeroType = function (type) {
-    for (var i = 0; i < this.heroes.length; i++) if (this.heroes[i].type === type) return true;
+    for (var i = 0; i < this.heroes.length; i++) {
+      if (this.heroes[i].type !== type) continue;
+      if (this.isSpiritLineMode() && !this.heroes[i].lineUnlocked) continue;
+      return true;
+    }
     return false;
   };
 
@@ -6302,8 +9048,19 @@
     for (var i = 0; i < source.length; i++) {
       var upgrade = source[i];
       if (!upgrade || upgrade.disabled) continue;
-      if (WALL_MODE && WALL_ALLOWED_ROGUE_UPGRADES.indexOf(upgrade.id) < 0) continue;
+      // 1-2 使用独立的新版三英雄牌池；其余关卡继续只看已批准的旧 Wall Mode 牌。
+      if (this.isSpiritLineMode()) {
+        if (!upgrade.spiritLineV2) continue;
+        if (upgrade.spiritLineV2Ultimate && !this.canOfferSpiritLineV2Ultimate(upgrade)) continue;
+      } else if (upgrade.spiritLineV2) {
+        continue;
+      }
+      if (WALL_MODE && !upgrade.spiritLineV2 && WALL_ALLOWED_ROGUE_UPGRADES.indexOf(upgrade.id) < 0) continue;
       if (WALL_MODE && isWallUltimateUnlockUpgrade(upgrade) && !this.canOfferUltimateUnlock(upgrade)) continue;
+      if (WALL_MODE && upgrade.ultimateEnhancement) {
+        var enhancementHero = this.heroByType(upgrade.hero);
+        if (!enhancementHero || !this.isHeroUltimateUnlocked(enhancementHero)) continue;
+      }
       if (preferredType && upgrade.type !== preferredType) continue;
       if (this.rogueLevel(upgrade.id) >= (upgrade.maxLevel || 1)) continue;
       if (upgrade.type === 'faction' && !this.hasFaction(upgrade.faction)) continue;
@@ -6314,7 +9071,24 @@
   };
 
   Game.prototype.hasAvailableUpgradeCards = function () {
-    return this.availableUpgradeList().length > 0;
+    if (this.isSpiritLineMode()) {
+      return this.availableUpgradeList('exclusive').length > 0 ||
+        this.protagonistDamageLevel < 3 || this.protagonistRateLevel < 3 || this.protagonistPierceLevel < 3;
+    }
+    if (this.availableUpgradeList().length > 0) return true;
+    // 关底即使已抽完常规牌池，也必须保留一次末波强化决策，
+    // 否则小怪清空后 Boss 会直接出场，破坏关卡收束节奏。
+    return !!(this.wave >= this.waveMax && this.currentWaveConfig && this.currentWaveConfig.enemies && this.currentWaveConfig.enemies.boss && !this.waveUpgradeOffered);
+  };
+
+  Game.prototype.makeFinalWaveFallbackCard = function () {
+    return {
+      upgradeId: 'final-wave-bastion', special: 'finalWaveUpgrade', type: 'common', rarity: 'rare',
+      frameRarity: 'rare', maxLevel: 1, hero: null, portraitHero: null, portraitType: null,
+      heroName: '阵法', role: '末波强化 · 稳阵', tag: '城防', effectHeroName: '阵法',
+      effectSkillName: '镇魂余烬', effectSkillKind: '城防', title: '末波·镇魂余烬',
+      desc: '城门获得一次额外护持，随后迎战关底 Boss。', color: C.gold, icon: 1
+    };
   };
 
   Game.prototype.heroForUpgrade = function (upgrade) {
@@ -6351,7 +9125,7 @@
       hero: hero && upgrade.type === 'exclusive' ? hero.id : null,
       portraitHero: hero ? hero.id : null,
       portraitType: hero ? hero.type : upgrade.hero,
-      heroName: upgrade.type === 'common' ? '全队' : upgrade.type === 'faction' ? upgrade.faction : (hero ? hero.name : '御灵'),
+      heroName: upgrade.type === 'common' ? '全队' : upgrade.type === 'faction' ? displayFactionName(upgrade.faction) : (hero ? hero.name : '御灵'),
       role: (UPGRADE_TYPE_LABELS[upgrade.type] || '强化') + ' · ' + (RARITY_LABELS[upgrade.rarity] || ''),
       tag: upgrade.type === 'exclusive' ? effectSkillKind : (UPGRADE_TYPE_LABELS[upgrade.type] || '强化'),
       effectHeroName: effectHeroName,
@@ -6364,14 +9138,13 @@
     };
   };
 
-  Game.prototype.offerCards = function () {
-    this.phase = 'cards'; this.pendingLevels = 0;
-    this.spellPress = null; this.dragDeploy = null; this.dragSoul = null;
-    var cards = [], used = {};
+  Game.prototype.buildUpgradeCards = function (excludedIds) {
+    var cards = [], used = {}, excluded = {};
+    for (var excludedIndex = 0; excludedIndex < (excludedIds || []).length; excludedIndex++) excluded[excludedIds[excludedIndex]] = true;
     function addCard(game, pool) {
       pool = shuffle(pool.slice());
       for (var i = 0; i < pool.length; i++) {
-        if (!used[pool[i].id]) {
+        if (!used[pool[i].id] && !excluded[pool[i].id]) {
           used[pool[i].id] = true;
           cards.push(game.makeUpgradeCard(pool[i]));
           return true;
@@ -6386,9 +9159,87 @@
     var allPool = this.availableUpgradeList();
     while (cards.length < 3 && addCard(this, allPool)) {}
 
+    // 牌池不足三张时才允许回落到旧牌，仍保证同一轮不重复。
+    excluded = {};
+    while (cards.length < 3 && addCard(this, allPool)) {}
+    return cards;
+  };
+
+  Game.prototype.offerCards = function () {
+    if (this.isSpiritLineMode()) { this.offerSpiritLineCards(); return; }
+    this.phase = 'cards'; this.pendingLevels = 0;
+    this.spellPress = null; this.dragDeploy = null; this.dragSoul = null;
+    var cards = this.buildUpgradeCards();
+
     if (!cards.length) { this.phase = 'wave'; return; }
     this.pendingCards = cards;
     this.audio.playSfx('uiCardOpen') || this.audio.tone('bell');
+  };
+
+  Game.prototype.eliteDrawCount = function () {
+    var weights = eliteDrawTuning().countWeights || [
+      { count: 1, weight: 5 }, { count: 2, weight: 25 },
+      { count: 3, weight: 40 }, { count: 4, weight: 25 },
+      { count: 5, weight: 5 }
+    ];
+    var total = 0, i;
+    for (i = 0; i < weights.length; i++) total += Math.max(0, Number(weights[i].weight) || 0);
+    if (!total) return 1;
+    var roll = Math.random() * total;
+    for (i = 0; i < weights.length; i++) {
+      roll -= Math.max(0, Number(weights[i].weight) || 0);
+      if (roll < 0) return clamp(Math.floor(Number(weights[i].count) || 1), 1, 5);
+    }
+    return 1;
+  };
+
+  Game.prototype.makeEliteDrawCards = function (count) {
+    var pool = shuffle(this.availableUpgradeList().slice()), cards = [], used = {};
+    for (var i = 0; i < pool.length && cards.length < count; i++) {
+      var upgrade = pool[i];
+      if (!upgrade || used[upgrade.id]) continue;
+      used[upgrade.id] = true;
+      cards.push(this.makeUpgradeCard(upgrade));
+    }
+    return cards;
+  };
+
+  Game.prototype.offerEliteDraw = function (source) {
+    if (this.isSpiritLineMode() || !source || this.phase !== 'wave') return false;
+    var requestedCount = this.eliteDrawCount();
+    var cards = this.makeEliteDrawCards(requestedCount);
+    if (!cards.length) return false;
+    this.phase = 'eliteDraw';
+    this.pendingCards = [];
+    this.spellPress = null; this.dragDeploy = null; this.dragSoul = null;
+    this.eliteDrawState = {
+      cards: cards,
+      count: cards.length,
+      requestedCount: requestedCount,
+      source: source,
+      t: 0,
+      continueRect: { x: 210, y: 1154, w: 300, h: 76 }
+    };
+    // 煞签不是待选牌：创建结果后立即调用同一套强化生效逻辑。
+    for (var i = 0; i < cards.length; i++) this.applyRogueUpgrade(cards[i], { silent: true, skipShowcase: true });
+    this.message = '精英已伏 · 煞签显现';
+    this.messageTime = 0;
+    this.audio.playSfx('upgradeRare') || this.audio.tone('bell');
+    return true;
+  };
+
+  Game.prototype.closeEliteDraw = function () {
+    if (this.phase !== 'eliteDraw') return;
+    this.eliteDrawState = null;
+    this.phase = 'wave';
+    this.message = '强化已生效 · 继续镇守';
+    this.messageTime = 2;
+    this.audio.playSfx('uiTap') || this.audio.tone('bell');
+  };
+
+  Game.prototype.updateEliteDraw = function (dt) {
+    if (!this.eliteDrawState) return;
+    this.eliteDrawState.t = Math.min(ELITE_DRAW_TIMING.revealEnd, this.eliteDrawState.t + dt);
   };
 
   Game.prototype.affectedHeroesForUpgrade = function (upgrade) {
@@ -6406,7 +9257,7 @@
     var affected = this.affectedHeroesForUpgrade(upgrade);
     var strong = upgrade.rarity === 'legendary';
     var ultimateUnlock = isWallUltimateUnlockUpgrade(upgrade);
-    var text = upgrade.type === 'common' ? '全队生效' : upgrade.type === 'faction' ? upgrade.faction + '生效' : '专属生效';
+    var text = upgrade.type === 'common' ? '全队生效' : upgrade.type === 'faction' ? displayFactionName(upgrade.faction) + '生效' : '专属生效';
     this.skillVignette = { color: card.color, life: .32, maxLife: .32 };
     this.waveProgressFlash = .55;
 
@@ -6480,7 +9331,27 @@
     }
   };
 
-  Game.prototype.applyRogueUpgrade = function (card) {
+  Game.prototype.applyRogueUpgrade = function (card, options) {
+    options = options || {};
+    var silent = !!options.silent;
+    if (card && card.special === 'spiritUnlock') {
+      this.unlockSpiritLineHero(card.unlockHero, card);
+      return;
+    }
+    if (card && card.special === 'protagonistUpgrade') {
+      var statKey = card.protagonistKind === 'damage' ? 'protagonistDamageLevel' : card.protagonistKind === 'rate' ? 'protagonistRateLevel' : 'protagonistPierceLevel';
+      this[statKey] = Math.min(3, (this[statKey] || 0) + 1);
+      this.upgradeCount++;
+      if (!this.isSpiritLineMode()) this.level = this.upgradeCount;
+      this.burst(W / 2, 1070, '#8ff4ff', 20);
+      this.floatText(W / 2, 1010, card.title, '#8ff4ff', 22, { life: 1.1, bold: true, rise: 18 });
+      if (!silent) {
+        this.message = card.title + '：' + card.desc;
+        this.messageTime = 3;
+        this.audio.playSfx('upgradeCommon') || this.audio.tone('bell');
+      }
+      return;
+    }
     var upgrades = YL.ROGUE_UPGRADES || [], upgrade = null;
     for (var i = 0; i < upgrades.length; i++) if (upgrades[i].id === card.upgradeId) { upgrade = upgrades[i]; break; }
     if (!upgrade) return;
@@ -6492,9 +9363,9 @@
       this.upgradeAcquireOrder.push(upgrade.id);
     }
     this.upgradeCount++;
-    this.level = this.upgradeCount;
+    if (!this.isSpiritLineMode()) this.level = this.upgradeCount;
     this.refreshUpgradeDerivedStats(false);
-    this.audio.playSfx(upgrade.rarity === 'legendary' ? 'upgradeLegendary' : upgrade.rarity === 'rare' ? 'upgradeRare' : 'upgradeCommon');
+    if (!silent) this.audio.playSfx(upgrade.rarity === 'legendary' ? 'upgradeLegendary' : upgrade.rarity === 'rare' ? 'upgradeRare' : 'upgradeCommon');
 
     var anchorHero = this.heroForUpgrade(upgrade);
     if (isWallUltimateUnlockUpgrade(upgrade) && anchorHero) {
@@ -6507,9 +9378,11 @@
     this.burst(bx, by, card.color, upgrade.rarity === 'legendary' ? 34 : 20);
     this.floatText(bx, by - 50, card.title, card.color, upgrade.rarity === 'legendary' ? 28 : 22, { life: 1.2, bold: true, rise: 22 });
     this.applyUpgradeImmediatePulse(upgrade, card);
-    if (upgrade.p0) this.nextWaveShowcase = { id: upgrade.id, name: upgrade.name, level: next, shown: false };
-    this.message = card.title + '：' + card.desc;
-    this.messageTime = 3;
+    if (!options.skipShowcase && upgrade.p0) this.nextWaveShowcase = { id: upgrade.id, name: upgrade.name, level: next, shown: false };
+    if (!silent) {
+      this.message = card.title + '：' + card.desc;
+      this.messageTime = 3;
+    }
   };
 
   Game.prototype.pickCard = function (index) {
@@ -6518,14 +9391,130 @@
     this.applyRogueUpgrade(card);
     this.pendingCards = [];
     this.phase = 'wave';
+    if (this.isSpiritLineMode() && this.pendingLevels > 0) {
+      this.pendingLevels--;
+      this.offerSpiritLineCards();
+    }
   };
 
   Game.prototype.updateZones = function (dt) {
     for (var i = this.zones.length - 1; i >= 0; i--) {
       var zone = this.zones[i];
+      if (zone.followTarget && zone.life > 0) {
+        var followTarget = this.getEnemy(zone.followTarget);
+        if (followTarget && !followTarget.dead) {
+          zone.x = followTarget.x;
+          zone.y = followTarget.y - 16;
+        }
+      }
       var previousZoneProgress = 1 - zone.life / Math.max(.01, zone.maxLife || 1);
       zone.life -= dt; zone.age = (zone.age || 0) + dt;
       var currentZoneProgress = 1 - zone.life / Math.max(.01, zone.maxLife || 1);
+      if (zone.type === 'spiritLineAftershock' && !zone.fired && zone.life <= 0) {
+        zone.fired = true;
+        var aftershockHero = this.getHero(zone.hero);
+        if (aftershockHero) {
+          var aftershockHit = false;
+          for (var aftershockIndex = 0; aftershockIndex < this.enemies.length; aftershockIndex++) {
+            var aftershockEnemy = this.enemies[aftershockIndex];
+            if (!aftershockEnemy || aftershockEnemy.dead || dist2(aftershockEnemy.x, aftershockEnemy.y, zone.x, zone.y) > zone.r * zone.r) continue;
+            aftershockHit = true;
+            this.damageEnemy(aftershockEnemy, zone.damage, aftershockHero, { impact: true, noRune: true });
+          }
+          this.zones.push({ type: 'ring', x: zone.x, y: zone.y, r: zone.r, color: C.gold, life: .34, maxLife: .34 });
+          if (aftershockHit && this.spiritLineV2Level('V2H01') >= 3) {
+            var shardDx = Math.cos(zone.angle + Math.PI / 2) * 42;
+            var shardDy = Math.sin(zone.angle + Math.PI / 2) * 42;
+            for (var shard = -1; shard <= 1; shard += 2) {
+              this.zones.push({ type: 'spiritLineShard', x: zone.x + shardDx * shard, y: zone.y + shardDy * shard, r: 42, damage: this.heroAttackPower(aftershockHero) * .35, hero: aftershockHero.id, life: .12, maxLife: .12, fired: false });
+              this.zones.push({ type: 'ring', x: zone.x + shardDx * shard, y: zone.y + shardDy * shard, r: 42, color: C.gold, life: .28, maxLife: .28 });
+            }
+          }
+        }
+      }
+      if (zone.type === 'spiritLineShard' && !zone.fired && zone.life <= 0) {
+        zone.fired = true;
+        var shardHero = this.getHero(zone.hero);
+        if (shardHero) this.damageArea(zone.x, zone.y, zone.r, zone.damage, shardHero, null, { impact: true, noRune: true });
+      }
+      if (zone.type === 'spiritLineCrescent' && !zone.fired && zone.life <= 0) {
+        zone.fired = true;
+        var crescentHero = this.getHero(zone.hero);
+        if (crescentHero) this.damageArea(zone.x, zone.y, zone.r, zone.damage, crescentHero, null, { impact: true, noRune: true });
+      }
+      if (zone.type === 'spiritLineUltimateStrike' && !zone.fired && zone.life <= 0) {
+        zone.fired = true;
+        var strikeHero = this.getHero(zone.hero);
+        if (strikeHero) {
+          this.damageArea(zone.x, zone.y, zone.r, zone.damage, strikeHero, null, { impact: true, skill: true, noSkillPush: true, noRune: true });
+          this.zones.push({ type: 'spiritLineUltimateRing', x: zone.x, y: zone.y, r: zone.r, color: '#f6e7c0', life: .26, maxLife: .26, clockwise: true, step: zone.step, steps: zone.steps });
+        }
+      }
+      if (zone.type === 'spiritLineUltimateOuterStrike' && !zone.fired && zone.life <= 0) {
+        zone.fired = true;
+        var outerHero = this.getHero(zone.hero);
+        if (outerHero) {
+          for (var outerIndex = 0; outerIndex < this.enemies.length; outerIndex++) {
+            var outerEnemy = this.enemies[outerIndex];
+            if (!outerEnemy || outerEnemy.dead) continue;
+            var outerDistance = distance(zone.x, zone.y, outerEnemy.x, outerEnemy.y - 18);
+            if (outerDistance < zone.innerR || outerDistance > zone.outerR) continue;
+            this.damageEnemy(outerEnemy, zone.damage, outerHero, { impact: true, skill: true, noSkillPush: true, noRune: true });
+          }
+          this.zones.push({ type: 'spiritLineUltimateRing', x: zone.x, y: zone.y, innerR: zone.innerR, r: zone.outerR, color: '#8878d8', life: .26, maxLife: .26, clockwise: false, step: zone.step, steps: zone.steps });
+        }
+      }
+      if (zone.type === 'spiritLineUltimateCrescent' && !zone.fired && zone.life <= 0) {
+        zone.fired = true;
+        var crescentOwner = this.getHero(zone.hero);
+        if (crescentOwner) {
+          for (var crescentIndex = 0; crescentIndex < this.enemies.length; crescentIndex++) {
+            var crescentTarget = this.enemies[crescentIndex];
+            if (!crescentTarget || crescentTarget.dead) continue;
+            var crescentRadius = Math.max(10, (zone.hitWidth || 20) + (crescentTarget.size || 1) * 8);
+            if (this.segmentDistanceSquared(crescentTarget.x, crescentTarget.y - 18, zone.x, zone.y, zone.tx, zone.ty) > crescentRadius * crescentRadius) continue;
+            this.damageEnemy(crescentTarget, zone.damage, crescentOwner, { impact: true, skill: true, noSkillPush: true, noRune: true });
+          }
+          this.zones.push({ type: 'xuanSlash', x: zone.x, y: zone.y, tx: zone.tx, ty: zone.ty, color: '#fff0a8', life: .34, maxLife: .34, bright: true, age: 0 });
+        }
+      }
+      if (zone.type === 'spiritLineUltimateAftershock' && !zone.fired && zone.life <= 0) {
+        zone.fired = true;
+        var aftershockUltimateHero = this.getHero(zone.hero);
+        if (aftershockUltimateHero) {
+          for (var ultimateAftershockIndex = 0; ultimateAftershockIndex < this.enemies.length; ultimateAftershockIndex++) {
+            var ultimateAftershockEnemy = this.enemies[ultimateAftershockIndex];
+            if (!ultimateAftershockEnemy || ultimateAftershockEnemy.dead || dist2(ultimateAftershockEnemy.x, ultimateAftershockEnemy.y - 18, zone.x, zone.y) > zone.r * zone.r) continue;
+            this.damageEnemy(ultimateAftershockEnemy, zone.damage, aftershockUltimateHero, { impact: true, skill: true, noSkillPush: true, noRune: true });
+            if (zone.seal && !ultimateAftershockEnemy.dead && (ultimateAftershockEnemy.elite || ultimateAftershockEnemy.type === 'boss')) {
+              this.zones.push({ type: 'spiritLineUltimateSeal', x: ultimateAftershockEnemy.x, y: ultimateAftershockEnemy.y - 16, r: 82, damage: this.heroAttackPower(aftershockUltimateHero) * .90, hero: aftershockUltimateHero.id, life: .18, maxLife: .18, fired: false });
+            }
+          }
+          this.zones.push({ type: 'spiritLineUltimateRing', x: zone.x, y: zone.y, r: zone.r, color: C.gold, life: .42, maxLife: .42, clockwise: true });
+        }
+      }
+      if (zone.type === 'spiritLineUltimateSeal' && !zone.fired && zone.life <= 0) {
+        zone.fired = true;
+        var sealHero = this.getHero(zone.hero);
+        if (sealHero) {
+          this.damageArea(zone.x, zone.y, zone.r, zone.damage, sealHero, null, { impact: true, skill: true, noSkillPush: true, noRune: true });
+          this.zones.push({ type: 'huangjinWallSeal', x: zone.x, y: zone.y, r: zone.r, life: .46, maxLife: .46 });
+        }
+      }
+      if (zone.type === 'spiritLineBloodZone') {
+        var bloodHero = this.getHero(zone.hero);
+        zone.tick = (zone.tick || 0) - dt;
+        if (bloodHero && zone.life > 0 && zone.tick <= 0) {
+          zone.tick += .25;
+          for (var bloodIndex = 0; bloodIndex < this.enemies.length; bloodIndex++) {
+            var bloodEnemy = this.enemies[bloodIndex];
+            if (!bloodEnemy || bloodEnemy.dead || dist2(bloodEnemy.x, bloodEnemy.y - 16, zone.x, zone.y) > zone.r * zone.r) continue;
+            bloodEnemy.spiritLineBloodSlow = Math.max(bloodEnemy.spiritLineBloodSlow || 0, .35);
+            bloodEnemy.spiritLineBloodSlowMultiplier = zone.slowMultiplier || .80;
+            this.damageEnemy(bloodEnemy, zone.damage * .25, bloodHero, { impact: false, noRune: true });
+          }
+        }
+      }
       if (zone.type === 'xuanBladePath') {
         this.updateXuanyaBladePathZone(zone, previousZoneProgress, currentZoneProgress);
       }
@@ -6633,10 +9622,76 @@
           break;
         }
       }
+      if (zone.type === 'nubaSigil' && zone.life > 0) {
+        var nubaSigilHero = this.getHero(zone.hero);
+        zone.delay = (zone.delay || 0) - dt;
+        if (!zone.fired && zone.delay <= 0) this.fireNubaSigil(zone);
+        if (zone.fired && nubaSigilHero && zone.tick != null) {
+          zone.tick -= dt;
+          if (zone.tick <= 0) {
+            zone.tick += Math.max(.18, zone.tickInterval || .82);
+            this.damageArea(zone.x, zone.y, zone.r * .88, zone.tickDamage || 0, nubaSigilHero, null, { impact: false, noRune: true });
+          }
+        }
+      }
+      if (zone.type === 'nubaPillar' && !zone.fired) {
+        zone.delay = (zone.delay || 0) - dt;
+        if (zone.delay <= 0) {
+          zone.fired = true;
+          var nubaPillarHero = this.getHero(zone.hero);
+          if (nubaPillarHero && zone.damage > 0) this.damageArea(zone.x, zone.y, zone.r, zone.damage, nubaPillarHero, null, { impact: true, skill: !!zone.skill, noSkillPush: !!zone.skill, noRune: true });
+          this.burst(zone.x, zone.y - 10, '#d7c38a', zone.skill ? 14 : 8);
+          if (zone.skill) this.impactPause(.035, 3);
+        }
+      }
+      if (zone.type === 'nubaField' && zone.life > 0) {
+        var nubaFieldHero = this.getHero(zone.hero);
+        if (zone.moving && nubaFieldHero) {
+          var nubaMovingTarget = this.densestEnemy();
+          if (nubaMovingTarget) { zone.x = nubaMovingTarget.x; zone.y = nubaMovingTarget.y; }
+        }
+        zone.tick = (zone.tick || 0) - dt;
+        if (nubaFieldHero && zone.tick <= 0) {
+          zone.tick += Math.max(.20, zone.tickInterval || .80);
+          this.damageArea(zone.x, zone.y, zone.r, zone.damage, nubaFieldHero, null, { impact: false, skill: true, noSkillPush: true, noRune: true });
+          this.zones.push({ type: 'nubaPillar', x: zone.x, y: zone.y, r: Math.min(96, zone.r * .30), hero: zone.hero, damage: 0, delay: 0, life: .30, maxLife: .30, age: 0, fired: true, skill: true, color: '#d7c38a' });
+        }
+      }
+      if (zone.type === 'nubaResonance' && !zone.fired) {
+        zone.delay = (zone.delay || 0) - dt;
+        if (zone.delay <= 0) {
+          zone.fired = true;
+          var resonanceNubaHero = this.getHero(zone.hero);
+          var resonanceHits = {};
+          if (resonanceNubaHero) {
+            for (var nubaResIndex = 0; nubaResIndex < this.enemies.length; nubaResIndex++) {
+              var nubaResEnemy = this.enemies[nubaResIndex];
+              if (!nubaResEnemy || nubaResEnemy.dead) continue;
+              var resRadius = Math.max(10, (zone.hitWidth || 28) + (nubaResEnemy.size || 1) * 7);
+              var onMainResonance = this.segmentDistanceSquared(nubaResEnemy.x, nubaResEnemy.y - 18, zone.x, zone.y, zone.tx, zone.ty) <= resRadius * resRadius;
+              var onBranchResonance = false;
+              if (zone.branchA) onBranchResonance = this.segmentDistanceSquared(nubaResEnemy.x, nubaResEnemy.y - 18, (zone.x + zone.tx) * .5, (zone.y + zone.ty) * .5, zone.branchA.x, zone.branchA.y) <= resRadius * resRadius;
+              if (!onBranchResonance && zone.branchB) onBranchResonance = this.segmentDistanceSquared(nubaResEnemy.x, nubaResEnemy.y - 18, (zone.x + zone.tx) * .5, (zone.y + zone.ty) * .5, zone.branchB.x, zone.branchB.y) <= resRadius * resRadius;
+              if (!onMainResonance && !onBranchResonance) continue;
+              resonanceHits[nubaResEnemy.id] = true;
+              this.damageEnemy(nubaResEnemy, zone.damage, resonanceNubaHero, { impact: true, noRune: true });
+            }
+            if (zone.gate) {
+              this.damageArea(zone.tx, zone.ty, 82, zone.burstDamage, resonanceNubaHero, null, { impact: true, skill: true, noSkillPush: true, noRune: true });
+              this.zones.push({ type: 'nubaPillar', x: zone.tx, y: zone.ty, r: 82, hero: zone.hero, damage: 0, delay: 0, life: .48, maxLife: .48, age: 0, fired: true, skill: true, color: '#d7c38a' });
+              this.zones.push({ type: 'nubaField', x: zone.tx, y: zone.ty, r: 122, hero: zone.hero, life: 1.12, maxLife: 1.12, age: 0, tick: .42, tickInterval: .42, damage: zone.burstDamage * .22, color: '#d7c38a' });
+            }
+            this.burst(zone.tx, zone.ty - 8, '#d7c38a', zone.gate ? 20 : 10);
+          }
+        }
+      }
       if (zone.type === 'delayedFire' && !zone.fired && zone.life <= .05) {
         zone.fired = true;
-        this.damageArea(zone.x, zone.y, zone.r, zone.damage, this.getHero(zone.hero), 'burn', zone.skill ? { impact: true, skill: true } : null);
-        this.burst(zone.x, zone.y, C.fire, 24); this.shake = 5;
+        var delayedFireHero = this.getHero(zone.hero);
+        this.damageArea(zone.x, zone.y, zone.r, zone.damage, delayedFireHero, zone.noBurn ? null : 'burn', zone.skill ? { impact: true, skill: true, noSkillPush: !!zone.noSkillPush } : null);
+        if (zone.finalMeteor && delayedFireHero) this.spawnSpiritLineV2MeteorScatter(delayedFireHero, zone.x, zone.y);
+        this.burst(zone.x, zone.y, C.fire, 24);
+        if (!zone.noScreenShake) this.shake = 5;
       }
       if (zone.type === 'hongyiSoulEcho' && !zone.fired && zone.life <= .05) {
         zone.fired = true;
@@ -6683,12 +9738,18 @@
         var guardian = this.getHero(zone.hero);
         if (guardian && guardian.alive && guardian.upgrades.ultimate >= 3) this.damageArea(guardian.x, guardian.y, zone.r, 16 * dt, guardian, null);
       }
-      if (zone.life <= 0) this.zones.splice(i, 1);
+      if (zone.life <= 0) {
+        if (zone.type === 'nubaSigil') {
+          var expiredNubaHero = this.getHero(zone.hero);
+          if (expiredNubaHero && expiredNubaHero.nubaSigil === zone) expiredNubaHero.nubaSigil = null;
+        }
+        this.zones.splice(i, 1);
+      }
     }
   };
 
   Game.prototype.impactPause = function (duration, shake) {
-    if (this.paused || this.phase === 'cards') return;
+    if (this.paused || this.phase === 'cards' || this.phase === 'eliteDraw') return;
     var speedScale = Math.max(1, this.speed || 1);
     this.hitStop = Math.max(this.hitStop || 0, (duration || .04) * speedScale);
     if (shake) this.shake = Math.max(this.shake || 0, shake);
@@ -6776,6 +9837,15 @@
         p.x += p.vx * dt; p.y += p.vy * dt;
         p.vx *= Math.pow(.20, dt);
         p.vy -= 12 * dt;
+      } else if (p.kind === 'hongyiTrail') {
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        p.vx *= Math.pow(.18, dt);
+        p.vy -= 24 * dt;
+        p.angle = (p.angle || 0) + Math.sin((p.max - p.life) * 9) * .018;
+      } else if (p.kind === 'hongyiSpark' || p.kind === 'hongyiHitSpark') {
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        p.vx *= Math.pow(.55, dt);
+        p.vy += (p.kind === 'hongyiHitSpark' ? 85 : 28) * dt;
       } else {
         p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 90 * dt;
       }
@@ -6789,10 +9859,14 @@
 
   Game.prototype.updateBattle = function (dt) {
     if (this.phase === 'cards') return;
+    if (this.phase === 'eliteDraw') { this.updateEliteDraw(dt); return; }
     this.messageTime = Math.max(0, this.messageTime - dt);
     this.waveBanner = Math.max(0, this.waveBanner - dt);
     this.shake = Math.max(0, this.shake - dt * 18);
     this.updateEffects(dt);
+    this.protagonistManualAttackCd = Math.max(0, (this.protagonistManualAttackCd || 0) - dt);
+    this.protagonistAttackFlash = Math.max(0, (this.protagonistAttackFlash || 0) - dt);
+    this.protagonistCastTime = Math.max(0, (this.protagonistCastTime || 0) - dt);
     this.updateSpellPress();
     this.updateHeroPress();
     if (this.paused || this.infoOverlay) return;
@@ -6812,12 +9886,22 @@
       this.updateProtagonistSkillEffects(dt);
     } else this.updateSpiritLamps(dt);
     this.gameTime += dt;
-    if (this.waveQueue.length && this.spawnTimer <= 0 && this.waveQueue[0].type === 'gap') {
+    var hasLiveWaveEnemies = this.enemies.some(function (enemy) { return enemy && !enemy.dead; });
+    var holdBossForFinalUpgrade = this.waveQueue.length && this.spawnTimer <= 0 &&
+      this.waveQueue[0].type === 'boss' && !this.waveUpgradeOffered && this.hasAvailableUpgradeCards();
+    if (holdBossForFinalUpgrade) {
+      // 留在本帧末尾，让下方的末波强化分支先打开选牌层。
+      this.spawnTimer = 0;
+    } else if (this.waveQueue.length && this.spawnTimer <= 0 && this.waveQueue[0].type === 'gap') {
       var gapStep = this.waveQueue.shift();
       this.spawnTimer = Math.max(.1, gapStep.delay || .5);
     } else if (this.waveQueue.length && this.spawnTimer <= 0) {
       var density = enemyDensityTuning();
       var maxAlive = density.maxAlive || 38;
+      if (this.waveQueue[0] && this.waveQueue[0].type === 'boss' && !this.bossAppearPlayed) {
+        this.bossAppearPlayed = true;
+        this.audio.playSfx('bossAppear');
+      }
       var packSize = this.waveQueue[0] && this.waveQueue[0].type === 'boss' ? 1 : this.nextSpawnPackSize();
       for (var spawn = 0; spawn < packSize && this.waveQueue.length && this.waveQueue[0].type !== 'gap' && this.enemies.length < maxAlive; spawn++) {
         this.spawnEnemy(this.waveQueue.shift());
@@ -6827,8 +9911,14 @@
     } else this.spawnTimer -= dt;
     this.updateHeroes(dt);
     if (this.phase === 'cards') return;
-    if (!WALL_MODE) this.syncBlocks();
+    if (this.isSpiritLineMode()) this.syncSpiritLineBlocks();
+    else if (!WALL_MODE) this.syncBlocks();
+    if (this.isSpiritLineMode()) this.updateProtagonistAutoAttack(dt);
     this.updateEnemies(dt);
+    if (this.activateNubaRescue()) return;
+    if (this.activateFirstStageTutorialAttackGuide()) return;
+    if (this.activateFirstStageTutorialSummonGuide()) return;
+    if (this.activateFirstStageTutorialSkillGuide()) return;
     if (this.phase === 'cards') return;
     if (this.state !== 'battle') return;
     if (!WALL_MODE) this.resolveSoftCollisions(dt);
@@ -6836,8 +9926,26 @@
     if (this.phase === 'cards') return;
     this.updateZones(dt);
     if (this.phase === 'cards') return;
+    if (this.phase === 'wave' && this.eliteDrawQueue && this.eliteDrawQueue.length) {
+      var eliteSource = this.eliteDrawQueue.shift();
+      if (this.offerEliteDraw(eliteSource)) return;
+    }
     if (!WALL_MODE) this.castAutoSpells(dt);
     if (this.phase === 'cards') return;
+    // 末波 Boss 不计入怪物数量：先把小怪清空，展示最后一次强化，
+    // 玩家选完后再让队尾 Boss 出场，避免强化与 Boss 同时出现。
+    var bossWaitingAlone = this.phase === 'wave' && !this.enemies.some(function (enemy) { return enemy && !enemy.dead; }) && this.waveQueue.length &&
+      this.waveQueue.every(function (entry) { return entry && entry.type === 'boss'; });
+    if (bossWaitingAlone && !this.waveUpgradeOffered && this.hasAvailableUpgradeCards()) {
+      this.waveUpgradeOffered = true;
+      this.pendingLevels = 0;
+      this.waveProgress = Math.max(1, this.waveTotal || 1);
+      this.waveProgressFlash = .45;
+      this.message = '小怪肃清：选择最后一项御灵强化，随后迎战 Boss';
+      this.messageTime = 3;
+      this.offerCards();
+      return;
+    }
     if (!this.waveQueue.length && !this.enemies.length && this.phase === 'wave') {
       if (!this.waveClearSfxPlayed) {
         this.waveClearSfxPlayed = true;
@@ -6846,12 +9954,19 @@
       if (this.wave >= this.waveMax) this.endBattle(true);
       else if (WALL_MODE && this.shouldOfferWaveRuneDrop()) {
         this.waveRuneDropOffered = true;
-        this.spawnRuneDrop(W / 2 + (Math.random() * 140 - 70), 600 + Math.random() * 90, WALL_FIXED_RUNE_DROPS[this.wave]);
-        this.message = '战场掉落挂件 · 点击问号拾取';
+        var waveRuneDrop = this.spawnRuneDrop(W / 2 + (Math.random() * 140 - 70), 600 + Math.random() * 90, WALL_FIXED_RUNE_DROPS[this.wave]);
+        if (waveRuneDrop && this.spiritAccessoryTutorial && this.spiritAccessoryTutorial.phase === 'waiting') {
+          this.spiritAccessoryTutorial.phase = 'pickup';
+          this.spiritAccessoryTutorial.dropId = waveRuneDrop.id;
+          this.paused = true;
+        }
+        this.message = '战场掉落灵饰 · 点击问号拾取';
         this.messageTime = 3;
         return;
       }
-      else if (!this.externalSkillPreview && !this.waveUpgradeOffered && this.hasAvailableUpgradeCards()) {
+      else if (!this.isSpiritLineMode() && !this.externalSkillPreview &&
+        (!this.isFirstStageTutorialActive() || (this.heroes && this.heroes.length > 0)) &&
+        !this.waveUpgradeOffered && this.hasAvailableUpgradeCards()) {
         this.waveUpgradeOffered = true;
         this.pendingLevels = 0;
         this.waveProgress = Math.max(1, this.waveTotal || 1);
@@ -6873,11 +9988,193 @@
     }
   };
 
+  Game.prototype.resultRewardsFor = function (stage, win) {
+    var source = stage && stage.resultRewards && stage.resultRewards[win ? 'success' : 'failure'];
+    if (!source || !source.length) return [];
+    return source.map(function (reward) {
+      return {
+        id: reward.id,
+        name: reward.name,
+        amount: Math.max(0, Math.round(reward.amount || 0)),
+        doubleEligible: !!reward.doubleEligible
+      };
+    });
+  };
+
+  Game.prototype.openLocalRewardedVideo = function () {
+    var doc = root.document;
+    if (!doc || !doc.body || !doc.createElement) return Promise.resolve(false);
+    var source = this.options && this.options.rewardedVideoSrc || '概念图/广告/广告.mp4';
+    return new Promise(function (resolve) {
+      var completed = false, settled = false;
+      var overlay = doc.createElement('div');
+      overlay.setAttribute('data-yuling-rewarded-video', 'true');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;color:#fff;font-family:sans-serif;';
+      var title = doc.createElement('div');
+      title.textContent = '观看完整视频后，关闭即可领取奖励';
+      title.style.cssText = 'font-size:20px;font-weight:700;color:#f5dda0;';
+      var video = doc.createElement('video');
+      video.src = source;
+      video.controls = true;
+      video.playsInline = true;
+      video.setAttribute('playsinline', '');
+      video.setAttribute('webkit-playsinline', '');
+      video.style.cssText = 'width:min(92vw,720px);max-height:72vh;background:#000;border:2px solid #b98a3d;border-radius:12px;';
+      var status = doc.createElement('div');
+      status.textContent = '未看完退出不会获得奖励';
+      status.style.cssText = 'font-size:16px;color:#d6d6d6;';
+      var close = doc.createElement('button');
+      close.textContent = '退出（不领取）';
+      close.style.cssText = 'min-width:240px;padding:14px 24px;border-radius:12px;border:2px solid #e1bd68;background:#654521;color:#fff5d2;font-size:18px;font-weight:700;cursor:pointer;';
+      overlay.appendChild(title); overlay.appendChild(video); overlay.appendChild(status); overlay.appendChild(close);
+      doc.body.appendChild(overlay);
+      function finish(watched) {
+        if (settled) return;
+        settled = true;
+        doc.removeEventListener('visibilitychange', onVisibility);
+        video.pause();
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        resolve(!!watched);
+      }
+      function onVisibility() {
+        if (doc.hidden) video.pause();
+        else if (!completed) {
+          var resumed = video.play();
+          if (resumed && resumed.catch) resumed.catch(function () {});
+        }
+      }
+      video.addEventListener('ended', function () {
+        completed = true;
+        status.textContent = '播放完成，请关闭领取奖励';
+        status.style.color = '#9ff1c6';
+        close.textContent = '关闭并领取';
+      });
+      video.addEventListener('error', function () {
+        status.textContent = '视频加载失败，本次不发放奖励';
+        status.style.color = '#ff9b91';
+      });
+      close.addEventListener('click', function () { finish(completed); });
+      doc.addEventListener('visibilitychange', onVisibility);
+      var started = video.play();
+      if (started && started.catch) started.catch(function () { status.textContent = '点击视频上的播放键开始观看'; });
+    });
+  };
+
+  Game.prototype.requestRewardedVideo = function (key) {
+    if (this.rewardedVideoBusy) return Promise.resolve(false);
+    this.rewardedVideoBusy = key;
+    var self = this, request;
+    try {
+      request = this.options && typeof this.options.showRewardedAd === 'function'
+        ? this.options.showRewardedAd({ placement: key })
+        : this.openLocalRewardedVideo();
+      if (!request || typeof request.then !== 'function') throw new Error('rewarded video provider must return a Promise');
+    } catch (error) {
+      this.rewardedVideoBusy = null;
+      return Promise.resolve(false);
+    }
+    return request.then(function (watched) {
+      self.rewardedVideoBusy = null;
+      return watched === true;
+    }).catch(function () {
+      self.rewardedVideoBusy = null;
+      return false;
+    });
+  };
+
+  Game.prototype.requestUpgradeRefresh = function () {
+    if (this.phase !== 'cards' || this.upgradeAdRefreshUsed || this.rewardedVideoBusy) return false;
+    var self = this, previousIds = (this.pendingCards || []).map(function (card) { return card.upgradeId; });
+    this.requestRewardedVideo('upgrade-refresh').then(function (watched) {
+      if (!watched || self.phase !== 'cards') {
+        self.message = watched ? '当前已不在强化选择界面' : '视频未完整观看，本次不刷新';
+        self.messageTime = 2.4;
+        return;
+      }
+      var refreshed = self.buildUpgradeCards(previousIds);
+      if (!refreshed.length) return;
+      self.pendingCards = refreshed;
+      self.upgradeAdRefreshUsed = true;
+      self.audio.playSfx('uiCardOpen') || self.audio.tone('bell');
+    });
+    return true;
+  };
+
+  Game.prototype.requestUpgradeAll = function () {
+    if (this.phase !== 'cards' || this.upgradeAdAllUsed || this.rewardedVideoBusy) return false;
+    var self = this;
+    this.requestRewardedVideo('upgrade-all').then(function (watched) {
+      if (!watched || self.phase !== 'cards') {
+        self.message = watched ? '当前已不在强化选择界面' : '视频未完整观看，本次不发放全选奖励';
+        self.messageTime = 2.4;
+        return;
+      }
+      var cards = (self.pendingCards || []).slice();
+      self.upgradeAdAllUsed = true;
+      for (var i = 0; i < cards.length; i++) self.applyRogueUpgrade(cards[i], { skipShowcase: true });
+      self.pendingCards = [];
+      self.phase = 'wave';
+      self.message = '三项强化已全部生效';
+      self.messageTime = 2.8;
+    });
+    return true;
+  };
+
+  Game.prototype.captureBattleResult = function (win) {
+    var heroes = (this.heroes || []).slice().sort(function (a, b) { return (a.soulSlot || 0) - (b.soulSlot || 0); });
+    var heroDamage = 0, rows = [], i;
+    for (i = 0; i < heroes.length; i++) heroDamage += Math.max(0, heroes[i].damageDone || 0);
+    rows.push({ id: 'protagonist', type: 'protagonist', name: '阵主', damage: Math.max(0, (this.totalDamage || 0) - heroDamage), hero: null });
+    for (i = 0; i < heroes.length && i < 5; i++) {
+      rows.push({
+        id: 'hero-' + heroes[i].id,
+        type: heroes[i].type,
+        name: heroes[i].name || (HERO_META[heroes[i].type] && HERO_META[heroes[i].type].name) || '御灵',
+        damage: Math.max(0, heroes[i].damageDone || 0),
+        hero: heroes[i]
+      });
+    }
+    while (rows.length < 6) rows.push({ id: 'empty-' + rows.length, type: 'empty', name: '未出战', damage: 0, hero: null });
+    var totalDamage = 0;
+    for (i = 0; i < rows.length; i++) totalDamage += rows[i].damage;
+    for (i = 0; i < rows.length; i++) rows[i].ratio = totalDamage > 0 ? rows[i].damage / totalDamage : 0;
+    var stage = this.getSelectedStage();
+    return {
+      win: !!win,
+      stageId: stage.id,
+      reachedWave: this.wave,
+      waveMax: this.waveMax,
+      durationSeconds: this.gameTime,
+      kills: this.kills,
+      baseHp: this.baseHp,
+      baseMax: this.baseMax,
+      damageRows: rows,
+      totalDamage: totalDamage,
+      rewards: this.resultRewardsFor(stage, win),
+      adMultiplierState: 'available',
+      rewardsClaimed: false
+    };
+  };
+
+  Game.prototype.requestResultAdDouble = function () {
+    var result = this.battleResult;
+    if (!result || result.adMultiplierState === 'claimed' || result.adMultiplierState === 'watching') return;
+    var self = this;
+    result.adMultiplierState = 'watching';
+    return this.requestRewardedVideo('result-double').then(function (watched) {
+      result.adMultiplierState = watched ? 'claimed' : 'available';
+      self.resultNotice = watched ? '双倍奖励已生效' : '视频未完整观看，奖励未翻倍';
+      self.resultNoticeUntil = self.time + 2.2;
+      self.audio.tone(watched ? 'bell' : 'hurt');
+    });
+  };
+
   Game.prototype.endBattle = function (win) {
     if (this.state !== 'battle') return;
-    this.state = 'result'; this.win = win;
     this.finalScore = Math.round(this.score + this.baseHp * 2 + this.upgradeCount * 80 + (win ? 2500 : 0));
     this.rewardXp = Math.max(20, Math.round(this.wave * 12 + this.kills * 1.5));
+    this.battleResult = this.captureBattleResult(win);
+    this.state = 'result'; this.win = win;
     this.audio.playSfx(win ? 'victory' : 'defeat') || this.audio.tone(win ? 'win' : 'hurt');
   };
 
@@ -6885,10 +10182,11 @@
     var now = timestamp || Date.now(), dt = this.last ? (now - this.last) / 1000 : .016;
     this.last = now; dt = Math.min(.034, Math.max(.001, dt));
     this.syncBgm();
-    if (!(this.state === 'battle' && this.phase === 'cards')) this.time += dt;
+    if (!(this.state === 'battle' && (this.phase === 'cards' || this.phase === 'eliteDraw'))) this.time += dt;
     if (this.state === 'formation' && this.formationNoticeTime > 0) this.formationNoticeTime = Math.max(0, this.formationNoticeTime - dt);
+    if (this.state === 'title') this.updateRecruitReveal();
     if (this.state === 'battle') {
-      var steps = (this.paused || this.phase === 'cards') ? 1 : (this.speed || 1);
+      var steps = (this.paused || this.phase === 'cards' || this.phase === 'eliteDraw') ? 1 : (this.speed || 1);
       for (var i = 0; i < steps; i++) this.updateBattle(dt);
     }
     this.render();
@@ -6896,7 +10194,7 @@
   };
 
   Game.prototype.syncBgm = function () {
-    var track = this.state === 'title' ? 'main' : 'battle';
+    var track = this.state === 'login' || this.state === 'title' ? 'main' : 'battle';
     if (track === this.bgmTrack) return;
     this.bgmTrack = track;
     this.audio.setMusic(track);
@@ -6907,6 +10205,7 @@
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     if (this.state === 'loading') this.drawLoading(ctx);
+    else if (this.state === 'login') this.drawLogin(ctx);
     else if (this.state === 'title') this.drawTitle(ctx);
     else if (this.state === 'formation') this.drawFormation(ctx);
     else if (this.state === 'battle') this.drawBattle(ctx);
@@ -6921,7 +10220,22 @@
     A.bar(ctx, 175, 750, 400, 18, this.loaded, Math.max(1, this.loadTotal), C.jade);
   };
 
+  Game.prototype.drawLogin = function (ctx) {
+    if (!cover(ctx, this.assets.title, 0, 0, W, H)) { ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, H); }
+    var fade = ctx.createLinearGradient(0, 0, 0, 540);
+    fade.addColorStop(0, 'rgba(4,12,22,.92)'); fade.addColorStop(1, 'rgba(4,12,22,0)');
+    ctx.fillStyle = fade; ctx.fillRect(0, 0, W, 560);
+    A.text(ctx, '御 灵 召 来', W / 2, 165, 72, '#f7d58c', 'center', '900');
+    A.button(ctx, 145, 1035, 460, 118, '开始游戏', true, '#bd5a2e');
+    if (YL.TutorialUI && YL.TutorialUI.draw) YL.TutorialUI.draw(this, ctx);
+  };
+
   Game.prototype.drawTitle = function (ctx) {
+    if (YL.HomeUI && YL.HomeUI.draw) {
+      YL.HomeUI.draw(this, ctx);
+      if (YL.TutorialUI && YL.TutorialUI.draw) YL.TutorialUI.draw(this, ctx);
+      return;
+    }
     if (!cover(ctx, this.assets.title, 0, 0, W, H)) { ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, H); }
     var fade = ctx.createLinearGradient(0, 0, 0, 540);
     fade.addColorStop(0, 'rgba(4,12,22,.92)'); fade.addColorStop(1, 'rgba(4,12,22,0)');
@@ -6944,9 +10258,49 @@
     ctx.restore();
   };
 
+  Game.prototype.drawFormationBackButton = function (ctx) {
+    var box = FORMATION_BACK, arrow = this.assets && this.assets.summonEventReturnArrow;
+    if (arrow && (arrow.width || arrow.naturalWidth)) {
+      ctx.drawImage(arrow, box.x, box.y, box.w, box.h);
+      return;
+    }
+    // 资源未加载时保留与千抽页一致的厚重金色回形箭头降级样式。
+    ctx.save();
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.shadowColor = '#ff9b28'; ctx.shadowBlur = 18;
+    ctx.strokeStyle = '#4a1c0d'; ctx.lineWidth = 24;
+    ctx.beginPath();
+    ctx.moveTo(box.x + 83, box.y + 86);
+    ctx.bezierCurveTo(box.x + 47, box.y + 86, box.x + 28, box.y + 71, box.x + 28, box.y + 46);
+    ctx.bezierCurveTo(box.x + 28, box.y + 24, box.x + 45, box.y + 10, box.x + 72, box.y + 10);
+    ctx.stroke();
+    ctx.strokeStyle = '#e9a743'; ctx.lineWidth = 15;
+    ctx.beginPath();
+    ctx.moveTo(box.x + 83, box.y + 86);
+    ctx.bezierCurveTo(box.x + 47, box.y + 86, box.x + 28, box.y + 71, box.x + 28, box.y + 46);
+    ctx.bezierCurveTo(box.x + 28, box.y + 24, box.x + 45, box.y + 10, box.x + 72, box.y + 10);
+    ctx.stroke();
+    ctx.strokeStyle = '#ffe59a'; ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(box.x + 81, box.y + 83);
+    ctx.bezierCurveTo(box.x + 52, box.y + 83, box.x + 35, box.y + 68, box.x + 35, box.y + 46);
+    ctx.bezierCurveTo(box.x + 35, box.y + 29, box.x + 49, box.y + 17, box.x + 69, box.y + 17);
+    ctx.stroke();
+    ctx.fillStyle = '#4a1c0d';
+    ctx.beginPath();
+    ctx.moveTo(box.x + 8, box.y + 46); ctx.lineTo(box.x + 52, box.y + 16); ctx.lineTo(box.x + 42, box.y + 42); ctx.lineTo(box.x + 62, box.y + 73);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#f0b64d'; ctx.lineWidth = 4; ctx.fillStyle = '#f0b64d';
+    ctx.beginPath();
+    ctx.moveTo(box.x + 15, box.y + 46); ctx.lineTo(box.x + 50, box.y + 23); ctx.lineTo(box.x + 41, box.y + 45); ctx.lineTo(box.x + 55, box.y + 66);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  };
+
   Game.prototype.drawFormationTop = function (ctx) {
+    var selectedStage = this.getSelectedStage();
     A.rr(ctx, 208, 28, 334, 68, 10, 'rgba(22,18,14,.82)', 'rgba(219,168,76,.74)', 3);
-    A.text(ctx, '幽 野 村  1-1', W / 2, 63, 30, C.paper, 'center', '900');
+    A.text(ctx, '幽 野 村  ' + selectedStage.id, W / 2, 63, 30, C.paper, 'center', '900');
     A.rr(ctx, 28, 72, 98, 108, 18, 'rgba(8,17,25,.80)', 'rgba(219,168,76,.62)', 3);
     this.drawFormationIcon(ctx, FORMATION_ICON.monster, 77, 118, 62);
     A.text(ctx, '怪物详情', 77, 164, 15, C.paper);
@@ -7003,7 +10357,7 @@
       ctx.lineWidth = selected ? 4 : 2.5;
       ctx.beginPath(); ctx.ellipse(center.x, center.y - 4, 52, 18, 0, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
-      A.spriteImage(ctx, this.assets[meta.sprite], center.x, center.y + 26, slot.type === 'huangjin' ? 118 : 110, 142, 1);
+      drawFormationHeroSprite(ctx, this.assets[meta.sprite], center.x, center.y + 26, slot.type === 'huangjin' ? 118 : 110, 142, slot.type, 1);
       A.rr(ctx, center.x - 36, center.y + 31, 72, 24, 12, 'rgba(9,17,23,.86)', meta.color, 2);
       A.text(ctx, meta.name, center.x, center.y + 44, 15, C.white);
       if (selected) this.drawFormationIcon(ctx, FORMATION_ICON.check, center.x + 46, center.y - 60, 32);
@@ -7050,7 +10404,7 @@
     A.rr(ctx, rect.x + rect.w - 52, rect.y + 14, 42, 24, 7, 'rgba(8,13,18,.86)', 'rgba(219,168,76,.44)', 1);
     A.text(ctx, '1级', rect.x + rect.w - 31, rect.y + 27, 14, C.white);
     A.text(ctx, meta.name, rect.x + rect.w / 2, rect.y + 170, 20, C.paper);
-    A.text(ctx, meta.faction + ' · ' + meta.job, rect.x + rect.w / 2, rect.y + 198, 14, '#9fb5ad');
+    A.text(ctx, (meta.factionName || meta.faction) + ' · ' + meta.job, rect.x + rect.w / 2, rect.y + 198, 14, '#9fb5ad');
     this.drawFormationIcon(ctx, FORMATION_ICON.star, rect.x + rect.w / 2, rect.y + rect.h - 33, 30, .9);
     if (deployed) {
       A.rr(ctx, rect.x + rect.w - 42, rect.y + rect.h - 46, 32, 32, 16, 'rgba(17,61,45,.88)', '#c8ffd7', 2);
@@ -7076,14 +10430,15 @@
     ctx.beginPath();
     A.pathRoundRect(ctx, rect.x + 15, portraitTop, rect.w - 30, 104, 8);
     ctx.clip();
-    A.spriteImage(ctx, this.assets[meta.sprite], rect.x + rect.w / 2, rect.y + 176, rect.w * .86, 146, unlocked ? (deployed ? 1 : .78) : .25);
+    var cardAlpha = unlocked ? (deployed ? 1 : .78) : .25;
+    drawFormationHeroSprite(ctx, this.assets[meta.sprite], rect.x + rect.w / 2, rect.y + 176, rect.w * .86, 146, type, cardAlpha);
     ctx.restore();
     this.drawFormationIcon(ctx, FORMATION_ICON.faction[meta.faction], rect.x + 25, rect.y + 27, 38, unlocked ? 1 : .28);
     this.drawFormationIcon(ctx, FORMATION_ICON.job[meta.job], rect.x + 28, rect.y + rect.h - 39, 34, unlocked ? 1 : .28);
     A.rr(ctx, rect.x + rect.w - 52, rect.y + 14, 42, 24, 7, 'rgba(8,13,18,.86)', unlocked ? 'rgba(219,168,76,.44)' : 'rgba(126,135,138,.34)', 1);
     A.text(ctx, '1级', rect.x + rect.w - 31, rect.y + 27, 14, unlocked ? C.white : '#7f8b8d');
     A.text(ctx, meta.name, rect.x + rect.w / 2, rect.y + 170, 20, unlocked ? C.paper : '#889295');
-    A.text(ctx, meta.faction + ' · ' + meta.job, rect.x + rect.w / 2, rect.y + 198, 14, unlocked ? '#9fb5ad' : '#697476');
+    A.text(ctx, (meta.factionName || meta.faction) + ' · ' + meta.job, rect.x + rect.w / 2, rect.y + 198, 14, unlocked ? '#9fb5ad' : '#697476');
     this.drawFormationIcon(ctx, FORMATION_ICON.star, rect.x + rect.w / 2, rect.y + rect.h - 33, 30, unlocked ? .9 : .22);
     if (deployed) {
       A.rr(ctx, rect.x + rect.w - 42, rect.y + rect.h - 46, 32, 32, 16, 'rgba(17,61,45,.88)', '#c8ffd7', 2);
@@ -7107,6 +10462,7 @@
 
   Game.prototype.drawFormationStart = function (ctx) {
     var active = this.formationSlots.length > 0;
+    var defaultMode = this.formationMode === 'default';
     var r = FORMATION_START;
     ctx.save();
     var grad = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
@@ -7116,11 +10472,11 @@
     ctx.shadowColor = active ? 'rgba(255,197,92,.72)' : 'rgba(0,0,0,0)';
     ctx.shadowBlur = active ? 18 + Math.sin(this.time * 5) * 5 : 0;
     this.drawFormationIcon(ctx, FORMATION_ICON.start, r.x + 58, r.y + r.h / 2, 58, active ? 1 : .45);
-    A.text(ctx, active ? '开始镇魂' : '请先上阵', r.x + r.w / 2 + 22, r.y + r.h / 2 + 2, 38, active ? C.white : '#b8c0bd', 'center', '900');
+    A.text(ctx, defaultMode ? (active ? '保存阵容' : '请先上阵') : (active ? '开始镇魂' : '请先上阵'), r.x + r.w / 2 + 22, r.y + r.h / 2 + 2, 38, active ? C.white : '#b8c0bd', 'center', '900');
     ctx.restore();
     A.rr(ctx, 608, 1206, 98, 74, 13, 'rgba(9,18,25,.78)', 'rgba(219,168,76,.46)', 2);
     this.drawFormationIcon(ctx, FORMATION_ICON.recommend, 657, 1232, 44, .82);
-    A.text(ctx, '推荐阵容', 657, 1269, 15, '#b8c9c2');
+    A.text(ctx, defaultMode ? '默认阵容' : '推荐阵容', 657, 1269, 15, '#b8c9c2');
   };
 
   Game.prototype.drawFormation = function (ctx) {
@@ -7141,6 +10497,7 @@
     this.drawFormationTeamBar(ctx);
     this.drawFormationCards(ctx);
     this.drawFormationStart(ctx);
+    this.drawFormationBackButton(ctx);
     if (this.formationNoticeTime > 0 && this.formationNotice) {
       A.rr(ctx, 98, 796, 554, 42, 16, 'rgba(8,16,22,.84)', 'rgba(219,168,76,.38)', 2);
       A.text(ctx, this.formationNotice, W / 2, 817, 18, C.paper);
@@ -7186,6 +10543,8 @@
     }
     ctx.restore();
     if (WALL_MODE) this.drawApprovedBattleLowerForeground(ctx);
+    if (WALL_MODE) this.drawFirstStageTutorialSummonButton(ctx);
+    if (this.autoCastUnlocked()) this.drawAutoCastButton(ctx);
     this.drawSkillVignette(ctx);
     this.drawSideRail(ctx);
     if (WALL_MODE) { this.drawRuneShelf(ctx); this.drawRuneDrag(ctx); }
@@ -7193,8 +10552,12 @@
     this.drawSpellHelp(ctx);
     if (!WALL_MODE) this.drawBottomFormation(ctx);
     if (this.phase === 'cards') this.drawCards(ctx);
-    if (this.paused) this.drawPause(ctx);
+    if (this.phase === 'eliteDraw') this.drawEliteDraw(ctx);
+    // 首关攻击/召唤引导只冻结战斗画面，不打开常规“阵法暂歇”菜单；引导暗幕与提示由 TutorialUI 绘制。
+    if (this.paused && !this.isFirstStageTutorialGuidePauseActive() && !this.isSpiritAccessoryTutorialGuidePauseActive() && !this.isNubaRescuePauseActive()) this.drawPause(ctx);
     if (this.infoOverlay) this.drawInfo(ctx);
+    this.drawNubaRescueDialogue(ctx);
+    if (YL.TutorialUI && YL.TutorialUI.draw) YL.TutorialUI.draw(this, ctx);
   };
 
   Game.prototype.drawSkillVignette = function (ctx) {
@@ -7300,6 +10663,28 @@
   };
 
   Game.prototype.drawGuardAreas = function (ctx) {
+    if (this.isSpiritLineMode()) {
+      ctx.save();
+      for (var s = 0; s < SPIRIT_LINE_HOME_SLOTS.length; s++) {
+        var home = SPIRIT_LINE_HOME_SLOTS[s];
+        var hero = null;
+        for (var h = 0; h < this.heroes.length; h++) if (this.heroes[h].lineSlot === s) { hero = this.heroes[h]; break; }
+        var color = hero ? HERO_META[hero.type].color : '#8ff4ff';
+        // 守备扇区仍参与寻敌与移动判定，但不在正式战斗画面绘制调试分界虚线。
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = color; ctx.globalAlpha = hero && hero.lineUnlocked ? .56 : .22;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(home.x, home.y + 18, 47, 16, 0, 0, Math.PI * 2); ctx.stroke();
+        if (hero && !hero.lineUnlocked) {
+          ctx.fillStyle = 'rgba(4,13,20,.58)';
+          ctx.beginPath(); ctx.arc(home.x, home.y - 34, 24, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = color; ctx.globalAlpha = .56; ctx.lineWidth = 1.6; ctx.stroke();
+          A.text(ctx, '待召来', home.x, home.y - 34, 13, '#dbe9dd', 'center', '900');
+        }
+      }
+      ctx.restore();
+      return;
+    }
     return;
     // 战斗界面不再显示阵位格子、连线和前/中/后排文字；交互逻辑仍保留。
     return;
@@ -7346,7 +10731,7 @@
   };
 
   Game.prototype.drawHeroBar = function (ctx, hero) {
-    if (WALL_MODE) return;
+    if (WALL_MODE && !this.isSpiritLineMode()) return;
     var barY = hero.y - 94;
     A.bar(ctx, hero.x - 46, barY, 92, 9, hero.hp, hero.maxHp, C.jade, '#15171a');
     var shield = Math.max(0, hero.shield || 0);
@@ -7572,7 +10957,7 @@
       ctx.lineTo(0, 7); ctx.lineTo(-2, 2); ctx.lineTo(-7, 0); ctx.lineTo(-2, -2);
       ctx.closePath(); ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#0b272c';
-      ctx.font = '900 10px "Microsoft YaHei", sans-serif';
+      ctx.font = '900 10px ' + uiFontFamily(10);
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(String(Math.min(9, enemy.suwenStarStacks || 0)), 0, 0);
       ctx.restore();
@@ -7594,7 +10979,7 @@
       ctx.moveTo(0, -7); ctx.lineTo(7, 0); ctx.lineTo(0, 7); ctx.lineTo(-7, 0);
       ctx.closePath(); ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#ffe8a0';
-      ctx.font = '900 10px "Microsoft YaHei", sans-serif';
+      ctx.font = '900 10px ' + uiFontFamily(10);
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(String(Math.min(9, enemy.huangjinSuppressStacks || 0)), 0, 0);
       ctx.restore();
@@ -7774,10 +11159,51 @@
       ctx.stroke();
       ctx.restore();
     }
-    if (hero.type === 'hongyi') this.drawHongyiSigils(ctx, hero);
+    if (hero.spiritLineV2) this.drawSpiritLineV2Status(ctx, hero);
+    else if (hero.type === 'hongyi') this.drawHongyiSigils(ctx, hero);
     if (hero.type === 'qingyi') this.drawQingyiGlow(ctx, hero);
+    if (hero.type === 'nuba') this.drawNubaStatus(ctx, hero);
     this.drawEquippedRuneBadge(ctx, hero);
     this.drawTalismanCountBadge(ctx, hero);
+  };
+
+  Game.prototype.drawSpiritLineV2Status = function (ctx, hero) {
+    ctx.save();
+    if (hero.type === 'hongyi') {
+      var sigilTotal = this.spiritLineV2Level('V2R02') >= 1 ? 3 : 4;
+      var filled = clamp(hero.spiritLineVolley || 0, 0, sigilTotal);
+      var pulse = clamp((hero.spiritLineLanceFlash || 0) / .48, 0, 1);
+      ctx.globalCompositeOperation = 'lighter';
+      for (var i = 0; i < sigilTotal; i++) {
+        var a = -Math.PI / 2 + i * Math.PI * 2 / sigilTotal + this.time * .5;
+        var sx = hero.x + Math.cos(a) * 28;
+        var sy = hero.y - 58 + Math.sin(a) * 14;
+        ctx.save();
+        ctx.translate(sx, sy); ctx.rotate(a + Math.PI / 2);
+        ctx.globalAlpha = i < filled ? .92 : .22;
+        ctx.fillStyle = i < filled ? '#ffb14f' : '#6c2e22';
+        ctx.strokeStyle = '#ffe5a0'; ctx.lineWidth = 1.4;
+        ctx.shadowColor = '#ff6a32'; ctx.shadowBlur = i < filled ? 10 + pulse * 12 : 2;
+        ctx.beginPath(); ctx.moveTo(0, -8 - pulse * 2); ctx.lineTo(5, 0); ctx.lineTo(0, 8 + pulse * 2); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.restore();
+      }
+    } else if (hero.type === 'xuanya' && (hero.spiritLineXuanyaEmpoweredTime || 0) > 0) {
+      var glow = clamp(hero.spiritLineXuanyaEmpoweredTime / 4, .18, 1);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = .38 + glow * .36;
+      ctx.strokeStyle = '#ff8678'; ctx.lineWidth = 2.2;
+      ctx.shadowColor = '#ff5e55'; ctx.shadowBlur = 13;
+      ctx.beginPath(); ctx.ellipse(hero.x, hero.y - 16, 38, 14, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = '#ffe0ca'; ctx.font = '900 13px ' + uiFontFamily(13); ctx.textAlign = 'center';
+      ctx.fillText('追斩', hero.x, hero.y - 72);
+    } else if (hero.type === 'huangjin' && hero.shield > .5 && hero.spiritLineShieldTime > 0) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = .36 + .16 * Math.sin(this.time * 7);
+      ctx.strokeStyle = '#e8c56c'; ctx.lineWidth = 2;
+      ctx.shadowColor = '#f3cf75'; ctx.shadowBlur = 11;
+      ctx.beginPath(); ctx.ellipse(hero.x, hero.y - 34, 37, 44, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
   };
 
   Game.prototype.drawHongyiSigils = function (ctx, hero) {
@@ -7787,6 +11213,7 @@
     var full = count >= required;
     var flash = clamp((hero.hongyiLotusFlash || 0) / .5, 0, 1);
     var base = this.time * (full ? 4.2 : 2.15) + hero.id * .77;
+    var sigilSprite = this.assets.hongyiSigil;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     for (var i = 0; i < required; i++) {
@@ -7803,6 +11230,14 @@
       ctx.globalAlpha = clamp(alpha, 0, 1);
       ctx.shadowColor = filled ? '#ff8a36' : 'rgba(255,138,54,.45)';
       ctx.shadowBlur = filled ? (12 + flash * 12) : 4;
+      if (sigilSprite && (sigilSprite.width || sigilSprite.naturalWidth)) {
+        var sigilW = filled ? 18 + flash * 3 : 15;
+        var sigilH = filled ? 30 + flash * 5 : 25;
+        ctx.globalCompositeOperation = 'screen';
+        ctx.drawImage(sigilSprite, -sigilW / 2, -sigilH / 2, sigilW, sigilH);
+        ctx.restore();
+        continue;
+      }
       ctx.fillStyle = filled ? (full ? '#ffd46e' : '#ff7d31') : 'rgba(120,54,34,.55)';
       ctx.strokeStyle = filled ? '#fff1b2' : 'rgba(255,190,100,.32)';
       ctx.lineWidth = filled ? 1.7 : 1.1;
@@ -7822,6 +11257,10 @@
       ctx.restore();
     }
     if (full) {
+      if (drawCenteredImage(ctx, this.assets.hongyiSigilRing, hero.x, hero.y - 54, 44 + flash * 10, 44 + flash * 10, this.time * 1.6, .74 + flash * .18, 'screen')) {
+        ctx.restore();
+        return;
+      }
       ctx.strokeStyle = 'rgba(255,215,105,' + (.42 + .18 * Math.sin(this.time * 8)) + ')';
       ctx.lineWidth = 2.5 + flash * 2;
       ctx.shadowColor = '#ff6134';
@@ -7862,6 +11301,31 @@
       ctx.fillStyle = filled ? '#dfffff' : 'rgba(43,112,128,.58)';
       ctx.beginPath(); ctx.arc(0, 0, filled ? 3.8 : 2.8, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
+    }
+    ctx.restore();
+  };
+
+  Game.prototype.drawNubaStatus = function (ctx, hero) {
+    var sigil = hero.nubaSigil;
+    var resonance = clamp((hero.nubaResonanceFlash || 0) / .58, 0, 1);
+    if (!sigil && !resonance) return;
+    var pulse = .5 + .5 * Math.sin(this.time * 7.4 + hero.id);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(215,195,138,' + (.28 + resonance * .48 + pulse * .06) + ')';
+    ctx.lineWidth = 2 + resonance * 2;
+    ctx.shadowColor = '#d7c38a'; ctx.shadowBlur = 10 + resonance * 14;
+    ctx.beginPath(); ctx.ellipse(hero.x, hero.y - 54, 35 + resonance * 12, 16 + resonance * 5, 0, 0, Math.PI * 2); ctx.stroke();
+    if (sigil && sigil.life > 0) {
+      var orbit = this.time * 2.2 + hero.id * .6;
+      var sx = hero.x + Math.cos(orbit) * 29, sy = hero.y - 55 + Math.sin(orbit) * 12;
+      ctx.fillStyle = '#e9dca7'; ctx.beginPath(); ctx.arc(sx, sy, 4 + pulse * 1.4, 0, Math.PI * 2); ctx.fill();
+      this.drawUpgradeText(ctx, '仪', sx, sy + 1, 11, '#241c20', 'center', '900');
+    }
+    if (resonance) {
+      ctx.strokeStyle = 'rgba(255,244,190,' + (.42 + resonance * .38) + ')';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(hero.x, hero.y - 54, 46 + (1 - resonance) * 12, -Math.PI * .72, Math.PI * .08); ctx.stroke();
     }
     ctx.restore();
   };
@@ -7924,7 +11388,7 @@
     }
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = '#fff4c8';
-    ctx.font = '900 ' + Math.max(12, r * .62) + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.font = '900 ' + Math.max(12, r * .62) + 'px ' + uiFontFamily(Math.max(12, r * .62));
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(meta.short || '?', 0, r * .08);
     ctx.restore();
@@ -7947,7 +11411,7 @@
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(drop.x, drop.y + bob, 25, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#fff6c8';
-      ctx.font = '900 30px "Microsoft YaHei","PingFang SC",sans-serif';
+      ctx.font = '900 30px ' + uiFontFamily(30);
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('?', drop.x, drop.y + bob + 1);
       ctx.restore();
@@ -8086,6 +11550,39 @@
     for (var i = 0; i < this.projectiles.length; i++) {
       var p = this.projectiles[i];
       if ((p.launchDelay || 0) > 0) continue;
+      if (p.type === 'protagonistSigil' || p.type === 'protagonistTalisman') {
+        var sigilAngle = p.dirX != null && p.dirY != null
+          ? Math.atan2(p.dirY, p.dirX)
+          : Math.atan2(p.y - (p.prevY == null ? p.y - 1 : p.prevY), p.x - (p.prevX == null ? p.x : p.prevX));
+        var sigilPulse = .82 + Math.sin((p.age || 0) * 16) * .10;
+        // 阵主符纸先用轻量代码绘制：尺寸克制、低亮度，避免抢过怪物和御灵的战斗反馈。
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = .82;
+        ctx.translate(p.x, p.y);
+        ctx.rotate(sigilAngle);
+        var paperW = 26 * sigilPulse, paperH = 14 * sigilPulse;
+        ctx.shadowColor = 'rgba(119,204,214,.28)'; ctx.shadowBlur = 3;
+        ctx.fillStyle = '#d8c79f';
+        ctx.strokeStyle = '#7c5b32';
+        ctx.lineWidth = 1.2;
+        ctx.fillRect(-paperW / 2, -paperH / 2, paperW, paperH);
+        ctx.strokeRect(-paperW / 2, -paperH / 2, paperW, paperH);
+        ctx.globalAlpha = .62;
+        ctx.strokeStyle = '#a44736';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-paperW * .22, -paperH * .28); ctx.lineTo(paperW * .22, -paperH * .28);
+        ctx.moveTo(-paperW * .28, 0); ctx.lineTo(paperW * .28, 0);
+        ctx.moveTo(-paperW * .20, paperH * .28); ctx.lineTo(paperW * .20, paperH * .28);
+        ctx.stroke();
+        ctx.globalAlpha = .28;
+        ctx.strokeStyle = '#8ff4ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-paperW * .72, 0); ctx.lineTo(-paperW * 1.55, 0); ctx.stroke();
+        ctx.restore();
+        continue;
+      }
       if (this.isXuanyaBladeProjectile && this.isXuanyaBladeProjectile(p.type)) {
         var targetEnemy = this.getEnemy(p.target);
         var bladeAngle = targetEnemy
@@ -8126,6 +11623,43 @@
           : Math.atan2(p.y - (p.prevY == null ? p.y - 1 : p.prevY), p.x - (p.prevX == null ? p.x : p.prevX));
         var firePulse = .86 + Math.sin((p.age || 0) * 18) * .12;
         var lotusShot = !!p.lotus || p.type === 'hongyiLotus';
+        var fireSprite = lotusShot
+          ? this.assets.hongyiFirePetal
+          : (p.type === 'hongyiFan' ? this.assets.hongyiFanFeather : this.assets.hongyiFireFeather);
+        var fireDrawn = false;
+        if (fireSprite && (fireSprite.width || fireSprite.naturalWidth)) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.strokeStyle = lotusShot ? 'rgba(255,221,118,.42)' : 'rgba(255,138,54,.34)';
+          ctx.lineWidth = lotusShot ? 4.5 : 3;
+          ctx.shadowColor = lotusShot ? '#ffdf73' : C.fire;
+          ctx.shadowBlur = lotusShot ? 18 : 12;
+          ctx.beginPath();
+          ctx.moveTo(p.prevX == null ? p.x : p.prevX, p.prevY == null ? p.y : p.prevY);
+          ctx.lineTo(p.x, p.y);
+          ctx.stroke();
+          ctx.restore();
+          var fireW = lotusShot ? 58 : (p.type === 'hongyiFan' ? 58 : 76);
+          var fireH = lotusShot ? 68 : (p.type === 'hongyiFan' ? 32 : 38);
+          var fireRotation = lotusShot ? fireAngle + Math.PI / 2 : fireAngle;
+          var ghostStep = lotusShot ? 18 : (p.type === 'hongyiFan' ? 13 : 16);
+          for (var ghost = 3; ghost >= 1; ghost--) {
+            var ghostAlpha = (lotusShot ? .18 : .14) / ghost;
+            var ghostScale = 1 + ghost * (lotusShot ? .09 : .06);
+            drawCenteredImage(
+              ctx, fireSprite,
+              p.x - Math.cos(fireAngle) * ghostStep * ghost,
+              p.y - Math.sin(fireAngle) * ghostStep * ghost + Math.sin((p.age || 0) * 18 + ghost) * 1.4,
+              fireW * firePulse * ghostScale,
+              fireH * firePulse * ghostScale,
+              fireRotation,
+              ghostAlpha,
+              'screen'
+            );
+          }
+          fireDrawn = drawCenteredImage(ctx, fireSprite, p.x, p.y, fireW * firePulse, fireH * firePulse, fireRotation, .96, 'screen');
+        }
+        if (fireDrawn) continue;
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
         ctx.strokeStyle = lotusShot ? 'rgba(255,221,118,.74)' : 'rgba(255,138,54,.58)';
@@ -8299,13 +11833,84 @@
       var foregroundZone = z.type === 'hitFlash' ||
         z.type === 'meleeSlash' || z.type === 'shieldBashImpact' ||
         z.type === 'wispClawHit' || z.type === 'orbImpact' ||
+        z.type === 'protagonistAimClick' ||
         z.type === 'xuanImpact' || z.type === 'xuanMark' || z.type === 'xuanCast' || z.type === 'xuanSlash' || z.type === 'xuanBoomerang' || z.type === 'xuanPierceTrail' || z.type === 'xuanBladePath' || z.type === 'xuanLink' ||
         z.type === 'holyHit' || z.type === 'holyLink' || z.type === 'holyShield' ||
         z.type === 'qingyiMark' || z.type === 'qingyiLink' || z.type === 'qingyiBurst' || z.type === 'burnSpreadLink' ||
-        z.type === 'starImpact' || z.type === 'starMark' || z.type === 'starLink' || z.type === 'starBurst';
+        z.type === 'starImpact' || z.type === 'starMark' || z.type === 'starLink' || z.type === 'starBurst' ||
+        z.type === 'nubaPillar' || z.type === 'nubaResonance';
       if (foregroundZone !== foreground) continue;
       ctx.save(); ctx.globalAlpha = alpha;
-      if (z.type === 'hitFlash') {
+      if (z.type === 'nubaSigil' || z.type === 'nubaField' || z.type === 'nubaUltimate') {
+        var nubaProgress = clamp(1 - z.life / Math.max(.01, z.maxLife || 1), 0, 1);
+        var nubaRadius = z.r || 120;
+        var nubaGradient = ctx.createRadialGradient(z.x, z.y, 4, z.x, z.y, nubaRadius);
+        nubaGradient.addColorStop(0, z.type === 'nubaUltimate' ? 'rgba(234,218,166,.28)' : 'rgba(215,195,138,.18)');
+        nubaGradient.addColorStop(.38, 'rgba(38,31,45,.30)');
+        nubaGradient.addColorStop(1, 'rgba(21,18,37,0)');
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = nubaGradient;
+        ctx.beginPath(); ctx.arc(z.x, z.y, nubaRadius * (z.lane ? 1 : .92), 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(215,195,138,' + (z.type === 'nubaUltimate' ? (.64 + .20 * Math.sin(this.time * 8)) : (.42 + .12 * Math.sin(this.time * 6))) + ')';
+        ctx.lineWidth = z.type === 'nubaUltimate' ? 5 : 3;
+        ctx.shadowColor = '#d7c38a'; ctx.shadowBlur = z.type === 'nubaUltimate' ? 22 : 12;
+        ctx.beginPath(); ctx.ellipse(z.x, z.y + 16, nubaRadius, nubaRadius * .30, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash(z.type === 'nubaSigil' && !z.fired ? [9, 7] : []);
+        ctx.beginPath(); ctx.arc(z.x, z.y, nubaRadius * (.62 + nubaProgress * .16), this.time * 1.2, this.time * 1.2 + Math.PI * 1.65); ctx.stroke();
+        ctx.setLineDash([]);
+        if (z.type === 'nubaUltimate') {
+          ctx.strokeStyle = 'rgba(234,218,166,.58)'; ctx.lineWidth = 4;
+          for (var nubaArc = 0; nubaArc < 3; nubaArc++) {
+            var nubaArcAngle = this.time * (nubaArc % 2 ? -.55 : .55) + nubaArc * 2.1;
+            ctx.beginPath(); ctx.arc(z.x, z.y, nubaRadius * (.38 + nubaArc * .13), nubaArcAngle, nubaArcAngle + Math.PI * .46); ctx.stroke();
+          }
+          if (z.lane) {
+            ctx.strokeStyle = 'rgba(215,195,138,.24)'; ctx.lineWidth = 12;
+            ctx.beginPath(); ctx.moveTo(54, z.y); ctx.lineTo(W - 54, z.y); ctx.stroke();
+          }
+        }
+        ctx.globalCompositeOperation = 'source-over';
+      } else if (z.type === 'nubaPillar') {
+        var pillarMax = Math.max(.01, z.maxLife || .5);
+        var pillarProgress = clamp(1 - z.life / pillarMax, 0, 1);
+        var pillarDelayProgress = z.fired ? 1 : clamp(1 - (z.delay || 0) / Math.max(.01, (z.delay || 0) + .22), 0, 1);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = z.fired ? 'rgba(239,228,183,' + (.82 * (1 - pillarProgress * .45)) + ')' : 'rgba(215,195,138,' + (.58 + pillarDelayProgress * .24) + ')';
+        ctx.shadowColor = '#d7c38a'; ctx.shadowBlur = z.fired ? 24 : 13;
+        ctx.lineWidth = z.fired ? 6 : 3;
+        ctx.setLineDash(z.fired ? [] : [8, 7]);
+        ctx.beginPath(); ctx.ellipse(z.x, z.y + 13, (z.r || 70) * (.62 + pillarDelayProgress * .38), (z.r || 70) * .20, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        if (z.fired) {
+          var pillarHeight = (z.r || 70) * (1.15 + (1 - pillarProgress) * .38);
+          for (var pillarRay = -2; pillarRay <= 2; pillarRay++) {
+            ctx.globalAlpha *= .48;
+            ctx.beginPath(); ctx.moveTo(z.x + pillarRay * 10, z.y + 4); ctx.lineTo(z.x + pillarRay * 5, z.y - pillarHeight); ctx.stroke();
+          }
+          ctx.globalAlpha *= .9;
+          ctx.fillStyle = 'rgba(234,218,166,.38)';
+          ctx.beginPath(); ctx.arc(z.x, z.y - pillarHeight * .70, Math.max(8, (z.r || 70) * .18), 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.globalCompositeOperation = 'source-over';
+      } else if (z.type === 'nubaResonance') {
+        var resonanceProgress = clamp(1 - z.life / Math.max(.01, z.maxLife || .56), 0, 1);
+        var resonanceAlpha = Math.sin(Math.PI * resonanceProgress) * .95;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = 'rgba(230,212,155,' + resonanceAlpha + ')';
+        ctx.lineWidth = (z.hitWidth || 28) * .16 + 5;
+        ctx.shadowColor = '#d7c38a'; ctx.shadowBlur = 22;
+        ctx.beginPath(); ctx.moveTo(z.x, z.y); ctx.quadraticCurveTo((z.x + z.tx) * .5, Math.min(z.y, z.ty) - 44, z.tx, z.ty); ctx.stroke();
+        if (z.branchA) {
+          ctx.strokeStyle = 'rgba(215,195,138,' + (resonanceAlpha * .72) + ')'; ctx.lineWidth = 4;
+          var branchMidX = (z.x + z.tx) * .5, branchMidY = (z.y + z.ty) * .5;
+          ctx.beginPath(); ctx.moveTo(branchMidX, branchMidY); ctx.lineTo(z.branchA.x, z.branchA.y); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(branchMidX, branchMidY); ctx.lineTo(z.branchB.x, z.branchB.y); ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(246,235,188,' + (resonanceAlpha * .86) + ')';
+        ctx.beginPath(); ctx.arc(z.tx, z.ty, 8 + resonanceProgress * 13, 0, Math.PI * 2); ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+      } else if (z.type === 'hitFlash') {
         var hitMax = Math.max(.01, z.maxLife || .22);
         var hitProgress = 1 - z.life / hitMax;
         var hitAlpha = clamp(z.life / hitMax, 0, 1);
@@ -8323,6 +11928,70 @@
         ctx.shadowColor = hitColor;
         ctx.shadowBlur = z.heavy ? 14 : 9;
         ctx.beginPath(); ctx.arc(z.x, z.y, z.r * (.58 + hitProgress * .50), 0, Math.PI * 2); ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+      } else if (z.type === 'protagonistAimClick') {
+        var aimClickProgress = clamp(1 - z.life / Math.max(.01, z.maxLife || .34), 0, 1);
+        var aimClickAlpha = 1 - aimClickProgress;
+        var aimClickRadius = z.r * (.38 + aimClickProgress * 1.08);
+        ctx.globalCompositeOperation = 'lighter';
+        var aimClickGlow = ctx.createRadialGradient(z.x, z.y, 1, z.x, z.y, aimClickRadius * 1.55);
+        aimClickGlow.addColorStop(0, 'rgba(255,248,204,' + (.92 * aimClickAlpha) + ')');
+        aimClickGlow.addColorStop(.28, 'rgba(144,245,255,' + (.68 * aimClickAlpha) + ')');
+        aimClickGlow.addColorStop(1, 'rgba(72,178,218,0)');
+        ctx.fillStyle = aimClickGlow;
+        ctx.beginPath(); ctx.arc(z.x, z.y, aimClickRadius * 1.55, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(192,252,255,' + (.94 * aimClickAlpha) + ')';
+        ctx.lineWidth = 3.5 - aimClickProgress * 1.5;
+        ctx.shadowColor = '#8ff4ff'; ctx.shadowBlur = 16;
+        ctx.beginPath(); ctx.arc(z.x, z.y, aimClickRadius, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,235,167,' + (.86 * aimClickAlpha) + ')';
+        ctx.lineWidth = 2;
+        for (var aimRay = 0; aimRay < 4; aimRay++) {
+          var aimAngle = aimRay * Math.PI / 2 + Math.PI / 4;
+          var aimInner = aimClickRadius * .72, aimOuter = aimClickRadius * (1.22 - aimClickProgress * .12);
+          ctx.beginPath();
+          ctx.moveTo(z.x + Math.cos(aimAngle) * aimInner, z.y + Math.sin(aimAngle) * aimInner);
+          ctx.lineTo(z.x + Math.cos(aimAngle) * aimOuter, z.y + Math.sin(aimAngle) * aimOuter);
+          ctx.stroke();
+        }
+        ctx.globalCompositeOperation = 'source-over';
+      } else if (z.type === 'spiritLineUltimateRing') {
+        var ultimateRingProgress = 1 - z.life / Math.max(.01, z.maxLife || .26);
+        var outerRadius = z.r || 120;
+        var innerRadius = z.innerR || Math.max(0, outerRadius - 13);
+        var ringDirection = z.clockwise === false ? -1 : 1;
+        var ringAngle = this.time * ringDirection * 8 + (z.step || 0) * .42;
+        var ringAlpha = Math.sin(Math.PI * clamp(ultimateRingProgress, 0, 1));
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = z.color === C.gold
+          ? 'rgba(255,223,110,' + (.90 * ringAlpha) + ')'
+          : z.clockwise === false
+            ? 'rgba(158,138,255,' + (.82 * ringAlpha) + ')'
+            : 'rgba(246,231,192,' + (.90 * ringAlpha) + ')';
+        ctx.lineWidth = z.innerR ? 7 : 9;
+        ctx.shadowColor = z.color || '#f6e7c0';
+        ctx.shadowBlur = z.innerR ? 20 : 26;
+        for (var ringArc = 0; ringArc < 3; ringArc++) {
+          var arcStart = ringAngle + ringArc * Math.PI * 2 / 3;
+          ctx.beginPath();
+          ctx.arc(z.x, z.y, outerRadius, arcStart, arcStart + Math.PI * .46);
+          ctx.stroke();
+          if (z.innerR) {
+            ctx.globalAlpha *= .72;
+            ctx.beginPath();
+            ctx.arc(z.x, z.y, innerRadius, arcStart + .13, arcStart + Math.PI * .42);
+            ctx.stroke();
+            ctx.globalAlpha = alpha;
+          }
+        }
+        ctx.globalCompositeOperation = 'source-over';
+      } else if (z.type === 'spiritLineUltimateSeal') {
+        var sealPreviewProgress = clamp((z.age || 0) / Math.max(.01, z.maxLife || .18), 0, 1);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = 'rgba(255,216,92,' + (.78 * (1 - sealPreviewProgress)) + ')';
+        ctx.lineWidth = 4; ctx.shadowColor = C.gold; ctx.shadowBlur = 18;
+        ctx.beginPath(); ctx.arc(z.x, z.y, z.r * (.35 + sealPreviewProgress * .50), 0, Math.PI * 2); ctx.stroke();
+        A.text(ctx, '封', z.x, z.y + 8, 32, '#ffe38a', 'center', '900');
         ctx.globalCompositeOperation = 'source-over';
       } else if (z.type === 'deathSoulFire') {
         var soulProgress = 1 - z.life / Math.max(.01, z.maxLife || .72);
@@ -8347,11 +12016,29 @@
         }
         ctx.globalCompositeOperation = 'source-over';
       } else if (z.type === 'fire' || z.type === 'delayedFire' || z.type === 'hongyiSoulEcho' || z.type === 'soulFire' || z.type === 'soulBurst' || z.type === 'emberBurst' || z.type === 'lotusFusionBurst') {
-        var fire = ctx.createRadialGradient(z.x, z.y, 4, z.x, z.y, z.r);
-        fire.addColorStop(0, z.lotus ? 'rgba(255,239,156,.90)' : 'rgba(255,221,112,.82)');
-        fire.addColorStop(.5, z.lotus ? 'rgba(255,72,48,.56)' : 'rgba(245,91,35,.5)');
-        fire.addColorStop(1, 'rgba(120,24,14,0)');
-        ctx.fillStyle = fire; ctx.beginPath(); ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2); ctx.fill();
+        if (z.type === 'emberBurst') {
+          var emberProgress = 1 - z.life / Math.max(.01, z.maxLife || .38);
+          var emberFrame = clamp(Math.floor(emberProgress * 8), 0, 7);
+          if (drawVfxFrame(ctx, this.assets.hongyiEmberBurstSheet, 8, 1, emberFrame, 0, z.x, z.y, z.r * 2.05, z.r * 2.05, 0, alpha)) {
+            ctx.restore();
+            continue;
+          }
+        }
+        var hongyiLotusAssetDrawn = false;
+        if (z.type === 'soulFire' && z.lotus) {
+          var lotusImage = z.lotusPlatform
+            ? this.assets.hongyiLotusPlatform
+            : (z.lotusPetals ? this.assets.hongyiLotusFivePetal : this.assets.hongyiLotusFire);
+          var lotusSize = z.r * (z.lotusPlatform ? 2.15 : (z.lotusPetals ? 2.08 : 2.0));
+          hongyiLotusAssetDrawn = drawCenteredImage(ctx, lotusImage, z.x, z.y, lotusSize, lotusSize, z.lotusPlatform ? this.time * .08 : 0, alpha * .88, 'screen');
+        }
+        if (!hongyiLotusAssetDrawn) {
+          var fire = ctx.createRadialGradient(z.x, z.y, 4, z.x, z.y, z.r);
+          fire.addColorStop(0, z.lotus ? 'rgba(255,239,156,.90)' : 'rgba(255,221,112,.82)');
+          fire.addColorStop(.5, z.lotus ? 'rgba(255,72,48,.56)' : 'rgba(245,91,35,.5)');
+          fire.addColorStop(1, 'rgba(120,24,14,0)');
+          ctx.fillStyle = fire; ctx.beginPath(); ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2); ctx.fill();
+        }
         if (z.type === 'delayedFire' && !z.fired) {
           var warning = clamp(z.life / Math.max(.01, z.maxLife || 1), 0, 1);
           ctx.strokeStyle = '#ffd67d'; ctx.lineWidth = 3 + (1 - warning) * 5;
@@ -8382,7 +12069,7 @@
           }
           ctx.globalCompositeOperation = 'source-over';
         }
-        if (z.type === 'soulFire') {
+        if (z.type === 'soulFire' && !hongyiLotusAssetDrawn) {
           ctx.strokeStyle = 'rgba(255,190,74,.8)'; ctx.lineWidth = 3;
           ctx.beginPath(); ctx.arc(z.x, z.y, z.r * (.72 + .08 * Math.sin(this.time * 12)), 0, Math.PI * 2); ctx.stroke();
           if (z.lotusPetals) {
@@ -9038,6 +12725,17 @@
         }
       } else if (z.type === 'orbImpact') {
         var impactScale = 1 + (z.age || 0) / Math.max(.01, z.maxLife || .34) * .65;
+        if (z.hongyi) {
+          var hongyiImpactProgress = 1 - z.life / Math.max(.01, z.maxLife || .28);
+          var hongyiImpactFrame = clamp(Math.floor(hongyiImpactProgress * 6), 0, 5);
+          if (drawVfxFrame(
+            ctx, this.assets.hongyiFireHitSheet, 6, 1, hongyiImpactFrame, 0,
+            z.x, z.y, z.r * 1.45 * impactScale, z.r * 1.45 * impactScale, 0, alpha
+          )) {
+            ctx.restore();
+            continue;
+          }
+        }
         drawVfxFrame(
           ctx, this.assets.rangedOrbsVfx, 4, 3, 3, z.vfxRow || 0,
           z.x, z.y, z.r * 2 * impactScale, z.r * 2 * impactScale, 0, alpha
@@ -9121,6 +12819,53 @@
         ctx.restore();
         continue;
       }
+      if (p.kind === 'hongyiTrail') {
+        var trailAlpha = clamp(p.life / p.max, 0, 1);
+        var trailProgress = 1 - trailAlpha;
+        ctx.save();
+        ctx.globalAlpha = trailAlpha * .78;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.angle || 0);
+        ctx.shadowColor = p.color || C.fire;
+        ctx.shadowBlur = 12 + p.size * .5;
+        var trailGrad = ctx.createRadialGradient(0, 0, 1, 0, 0, p.size * 1.45);
+        trailGrad.addColorStop(0, 'rgba(255,247,178,.84)');
+        trailGrad.addColorStop(.34, 'rgba(255,139,54,.56)');
+        trailGrad.addColorStop(.72, 'rgba(255,54,30,.22)');
+        trailGrad.addColorStop(1, 'rgba(255,38,18,0)');
+        ctx.fillStyle = trailGrad;
+        ctx.beginPath();
+        ctx.ellipse(
+          0, 0,
+          p.size * (p.stretch || 1.6) * (1 + trailProgress * .18),
+          p.size * .56 * (1 - trailProgress * .28),
+          0, 0, Math.PI * 2
+        );
+        ctx.fill();
+        ctx.restore();
+        continue;
+      }
+      if (p.kind === 'hongyiSpark' || p.kind === 'hongyiHitSpark') {
+        var sparkAlpha = clamp(p.life / p.max, 0, 1);
+        ctx.save();
+        ctx.globalAlpha = sparkAlpha;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = p.color || C.fire;
+        ctx.fillStyle = p.color || C.fire;
+        ctx.shadowColor = p.color || C.fire;
+        ctx.shadowBlur = p.kind === 'hongyiHitSpark' ? 10 : 7;
+        ctx.lineWidth = Math.max(1.2, p.size * .58);
+        ctx.beginPath();
+        ctx.moveTo(p.x - p.vx * .018, p.y - p.vy * .018);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * (.75 + sparkAlpha * .35), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        continue;
+      }
       ctx.globalAlpha = clamp(p.life / p.max, 0, 1); ctx.fillStyle = p.color;
       ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
     }
@@ -9137,7 +12882,7 @@
   };
 
   Game.prototype.drawWaveBanner = function (ctx) {
-    var alpha = clamp(this.waveBanner * 1.3, 0, 1), boss = this.wave === 20;
+    var alpha = clamp(this.waveBanner * 1.3, 0, 1), boss = this.wave >= this.waveMax;
     ctx.save(); ctx.globalAlpha = alpha;
     A.panel(ctx, 155, 210, 440, 96, .84);
     A.text(ctx, boss ? (this.wave === 20 ? '终 局 · 纸 扎 迎 亲' : '中 段 · 凶 煞 现 形') : '诡 潮 · 第 ' + this.wave + ' 波', W / 2, 247, 32, boss ? '#ff9d65' : C.paper);
@@ -9150,7 +12895,7 @@
     var buttons = [
       { y: 128, title: this.paused ? '继续' : '暂停', sub: formatClock(this.gameTime), type: 'pause' },
       { y: 214, title: '数据', sub: '', type: 'data' },
-      { y: 300, title: '倍速', sub: 'X' + this.speed, type: 'speed' },
+      { y: 300, title: '倍速', sub: this.speedUnlocked() ? 'X' + (clamp(this.speed || 1, 1, 2) | 0) : '待解锁', type: 'speed' },
       { y: TALISMAN_BUTTON.y, title: WALL_MODE ? '强化' : '符箓', sub: '', type: 'talisman' }
     ];
     for (var i = 0; i < buttons.length; i++) this.drawSideButton(ctx, 684, buttons[i].y, 54, 66, buttons[i]);
@@ -9236,7 +12981,7 @@
   };
 
   Game.prototype.drawSpeedButtonFace = function (ctx, x, y, w, h) {
-    var speed = clamp(this.speed || 1, 1, 3) | 0;
+    var speed = clamp(this.speed || 1, 1, 2) | 0;
     var cx = x + w / 2, cy = y + 25;
     var xGlyph = this.assets.hudSpeedGlyphX;
     var nGlyph = this.assets['hudSpeedGlyph' + speed];
@@ -9325,12 +13070,26 @@
 
   Game.prototype.drawApprovedBattleLowerProtagonist = function (ctx) {
     var r = BATTLE_LOWER_ART.protagonist;
-    var img = this.assets.taoistMain;
+    var castSheet = this.assets.protagonistCastSheet;
+    var castReady = castSheet && (castSheet.width || castSheet.naturalWidth) && (this.protagonistCastTime || 0) > 0;
+    var img = castReady ? castSheet : this.assets.taoistMain;
     if (!img || !(img.width || img.naturalWidth)) return false;
     ctx.save();
     ctx.shadowColor = 'rgba(224,177,84,.56)';
     ctx.shadowBlur = 8;
-    A.spriteImage(ctx, img, r.x, r.y, r.w, r.h, 1);
+    if (castReady) {
+      var iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight;
+      var sw = iw / 3, sh = ih / 2, inset = 4;
+      var scale = Math.min(r.w / (sw - inset * 2), r.h / (sh - inset * 2));
+      var dw = (sw - inset * 2) * scale, dh = (sh - inset * 2) * scale;
+      var progress = 1 - clamp(this.protagonistCastTime / Math.max(.001, this.protagonistCastMax || .62), 0, 1);
+      var frame = Math.min(5, Math.floor(progress * 6));
+      var col = frame % 3, row = Math.floor(frame / 3);
+      ctx.drawImage(img, col * sw + inset, row * sh + inset, sw - inset * 2, sh - inset * 2,
+        r.x - dw / 2, r.y - dh, dw, dh);
+    } else {
+      A.spriteImage(ctx, img, r.x, r.y, r.w, r.h, 1);
+    }
     ctx.restore();
     return true;
   };
@@ -9369,6 +13128,10 @@
     if (!this.drawApprovedBattleLowerProtagonist(ctx)) this.drawTaoistCore(ctx);
     this.drawApprovedBattleLowerHealth(ctx);
     this.drawSpellDock(ctx);
+  };
+
+  Game.prototype.drawFirstStageTutorialSummonButton = function (ctx) {
+    // 召唤教学现在由 TutorialUI 罩住主角并提示点击，不再在主角身上叠加独立按钮。
   };
 
   Game.prototype.drawEndpointGround = function (ctx) {
@@ -9603,11 +13366,12 @@
   };
 
   Game.prototype.drawSpellDock = function (ctx) {
+    if (this.isFirstStageTutorialActive() && !this.firstStageTutorial.skillUnlocked) return;
     var lit = clamp(this.spiritLampLit || 0, 0, this.spiritLampMax || SPIRIT_LAMP_MAX);
     var max = this.spiritLampMax || SPIRIT_LAMP_MAX;
     var pulse = clamp((this.spiritLampPulse || 0) / .55, 0, 1);
     var intervalBoost = 1 + this.upgradeValue('U05', [.15, .25, .35], 0);
-    var interval = Math.max(.5, (this.spiritLampInterval || 5) / intervalBoost);
+    var interval = Math.max(.5, (this.spiritLampInterval || SPIRIT_LAMP_INTERVAL) / intervalBoost);
     var charge = lit < max ? clamp((this.spiritLampTimer || 0) / interval, 0, 1) : 0;
     A.rr(ctx, 14, 1228, 310, 86, 16, 'rgba(6,14,20,.84)', 'rgba(219,168,76,.62)', 3);
     A.text(ctx, '灵气', 58, 1252, 18, C.paper);
@@ -9636,8 +13400,9 @@
     }
     A.text(ctx, lit >= max ? '已满' : '充能中', 202, 1285, 13, lit >= max ? C.gold : '#93cfd5');
 
-    for (var i = 0; i < SPELL_KEYS.length; i++) {
-      var key = SPELL_KEYS[i], meta = SPELL_META[key], pos = SPELL_POS[key];
+    var visibleSpellKeys = this.visibleProtagonistSpellKeys();
+    for (var i = 0; i < visibleSpellKeys.length; i++) {
+      var key = visibleSpellKeys[i], meta = SPELL_META[key], pos = SPELL_POS[key];
       var disabled = !meta || meta.disabled;
       var enough = !disabled && this.hasSpiritLamps(key);
       var cd = !disabled && this.spellMax[key] > 0 ? clamp(this.spellCd[key] / this.spellMax[key], 0, 1) : 0;
@@ -9674,7 +13439,6 @@
         ctx.beginPath(); ctx.arc(pos.x, pos.y, 31, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(3,8,13,.50)';
         ctx.fill();
-        A.text(ctx, '缺', pos.x, pos.y + 1, 17, '#b9c6c4', 'center', '900');
         ctx.restore();
       }
 
@@ -9717,7 +13481,7 @@
 
   Game.prototype.drawTalismanDescription = function (ctx, value, x, y, maxWidth, color) {
     var chars = String(value || '').split(''), line = '', lines = [];
-    ctx.save(); ctx.font = '700 15px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.save(); ctx.font = '700 15px ' + uiFontFamily(15);
     for (var i = 0; i < chars.length; i++) {
       var next = line + chars[i];
       if (ctx.measureText(next).width > maxWidth && line) {
@@ -9838,7 +13602,7 @@
   // intentionally adds a soft shadow, so upgrade-card copy uses this sharp path.
   Game.prototype.drawUpgradeText = function (ctx, value, x, y, size, color, align, weight) {
     ctx.save();
-    ctx.font = (weight || '700') + ' ' + size + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.font = (weight || '700') + ' ' + size + 'px ' + uiFontFamily(size);
     ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = color; ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
     ctx.fillText(value, x, y);
@@ -9847,7 +13611,7 @@
 
   Game.prototype.wrapUpgradeText = function (ctx, value, x, y, maxWidth, size, color) {
     var chars = String(value || '').split(''), line = '', lines = [];
-    ctx.save(); ctx.font = '700 ' + size + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.save(); ctx.font = '700 ' + size + 'px ' + uiFontFamily(size);
     for (var i = 0; i < chars.length; i++) {
       var test = line + chars[i];
       if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = chars[i]; } else line = test;
@@ -9859,7 +13623,7 @@
   Game.prototype.upgradeTextLines = function (ctx, value, maxWidth, size, weight) {
     var chars = String(value || '').split(''), line = '', lines = [];
     ctx.save();
-    ctx.font = (weight || '700') + ' ' + size + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.font = (weight || '700') + ' ' + size + 'px ' + uiFontFamily(size);
     for (var i = 0; i < chars.length; i++) {
       var test = line + chars[i];
       if (ctx.measureText(test).width > maxWidth && line) {
@@ -10032,13 +13796,218 @@
     if (!this.drawUpgradeOrnament(ctx, UPGRADE_CARD_ORNAMENT_CROPS.footer, 118, 838, 514, 109)) {
       A.text(ctx, '\u9009\u62e9\u4e00\u5f20\u7b26\u7b8f\uff0c\u83b7\u5f97\u672c\u5c40\u5f3a\u5316', W / 2, 880, 19, C.paper);
     }
+    var refreshBusy = this.rewardedVideoBusy === 'upgrade-refresh';
+    var allBusy = this.rewardedVideoBusy === 'upgrade-all';
+    var refreshDisabled = this.upgradeAdRefreshUsed || (!!this.rewardedVideoBusy && !refreshBusy);
+    var allDisabled = this.upgradeAdAllUsed || (!!this.rewardedVideoBusy && !allBusy);
+    A.rr(ctx, UPGRADE_REWARDED_ACTIONS.refresh.x, UPGRADE_REWARDED_ACTIONS.refresh.y, UPGRADE_REWARDED_ACTIONS.refresh.w, UPGRADE_REWARDED_ACTIONS.refresh.h, 18,
+      refreshDisabled ? '#30393b' : '#176a67', refreshDisabled ? '#77827f' : '#73e4d1', 2.5);
+    A.rr(ctx, UPGRADE_REWARDED_ACTIONS.all.x, UPGRADE_REWARDED_ACTIONS.all.y, UPGRADE_REWARDED_ACTIONS.all.w, UPGRADE_REWARDED_ACTIONS.all.h, 18,
+      allDisabled ? '#3a3533' : '#79542c', allDisabled ? '#837b72' : '#efd07a', 2.5);
+    this.drawUpgradeText(ctx, refreshBusy ? '播放中…' : this.upgradeAdRefreshUsed ? '本局已刷新' : '看视频刷新', UPGRADE_REWARDED_ACTIONS.refresh.x + UPGRADE_REWARDED_ACTIONS.refresh.w / 2, UPGRADE_REWARDED_ACTIONS.refresh.y + 28, 21, refreshDisabled ? '#aeb8b4' : '#eafff8', 'center', '900');
+    this.drawUpgradeText(ctx, allBusy ? '播放中…' : this.upgradeAdAllUsed ? '本局已领取' : '看视频全都要', UPGRADE_REWARDED_ACTIONS.all.x + UPGRADE_REWARDED_ACTIONS.all.w / 2, UPGRADE_REWARDED_ACTIONS.all.y + 28, 21, allDisabled ? '#b6afa6' : '#fff2c3', 'center', '900');
+    this.drawUpgradeText(ctx, '每局各限一次', UPGRADE_REWARDED_ACTIONS.refresh.x + UPGRADE_REWARDED_ACTIONS.refresh.w / 2, UPGRADE_REWARDED_ACTIONS.refresh.y + 52, 14, '#a9cfc6', 'center', '700');
+    this.drawUpgradeText(ctx, '可先刷新再全选', UPGRADE_REWARDED_ACTIONS.all.x + UPGRADE_REWARDED_ACTIONS.all.w / 2, UPGRADE_REWARDED_ACTIONS.all.y + 52, 14, '#d7c59c', 'center', '700');
     this.drawCardEditor(ctx);
+    ctx.restore();
+  };
+
+  Game.prototype.eliteDrawSlot = function (index, count) {
+    if (count <= 1) return { x: 58, y: 362, w: 634, h: 500 };
+    if (count === 2) return { x: 38 + index * 340, y: 414, w: 324, h: 438 };
+    if (count === 3) {
+      if (index === 0) return { x: 150, y: 328, w: 450, h: 302 };
+      return { x: 34 + (index - 1) * 358, y: 666, w: 330, h: 302 };
+    }
+    return { x: 34 + (index % 2) * 358, y: 348 + Math.floor(index / 2) * 330, w: 330, h: 300 };
+  };
+
+  Game.prototype.drawEliteResultCard = function (ctx, card, slot, cardIndex) {
+    var rarity = upgradeCardFrameRarity(card);
+    var border = UPGRADE_CARD_FRAME_COLORS[rarity] || C.gold;
+    var body = rarity === 'legendary' ? 'rgba(76,25,25,.96)' : rarity === 'rare' ? 'rgba(65,43,21,.96)' : 'rgba(15,47,57,.96)';
+    var compact = slot.h <= 310;
+    var titleSize = compact ? 17 : 24;
+    var descSize = compact ? 13 : 16;
+    var iconSize = compact ? 58 : 88;
+    var iconY = slot.y + (compact ? 86 : 128);
+    var hero = card.type === 'exclusive' ? (this.getHero(card.portraitHero) || this.heroByType(card.portraitType)) : null;
+    ctx.save();
+    ctx.globalAlpha = .98;
+    A.rr(ctx, slot.x, slot.y, slot.w, slot.h, 20, body, border, compact ? 2 : 3);
+    ctx.globalAlpha = 1;
+    A.rr(ctx, slot.x + 12, slot.y + 12, slot.w - 24, compact ? 28 : 36, 10, border);
+    this.drawUpgradeText(ctx, (card.heroName || '全队') + ' · ' + (card.tag || '强化'), slot.x + slot.w * .5, slot.y + (compact ? 26 : 30), compact ? 12 : 15, '#21150d', 'center', '900');
+    ctx.save();
+    if (hero) {
+      this.drawHeroPortrait(ctx, hero, slot.x + slot.w * .5, iconY, iconSize * .5);
+    } else {
+      ctx.shadowColor = border; ctx.shadowBlur = compact ? 10 : 18;
+      ctx.fillStyle = rarity === 'legendary' ? '#db6c38' : rarity === 'rare' ? '#e4ac45' : '#50bdd0';
+      ctx.beginPath(); ctx.arc(slot.x + slot.w * .5, iconY, iconSize * .5, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0; ctx.strokeStyle = '#fff1b6'; ctx.lineWidth = 2; ctx.stroke();
+      this.drawUpgradeText(ctx, '签', slot.x + slot.w * .5, iconY + 2, compact ? 24 : 38, '#fff4c6', 'center', '900');
+    }
+    ctx.restore();
+    var titleLines = this.upgradeTextLines(ctx, card.title || '煞签强化', slot.w - 34, titleSize, '900').slice(0, 2);
+    var titleY = slot.y + (compact ? 142 : 202);
+    for (var titleIndex = 0; titleIndex < titleLines.length; titleIndex++) {
+      this.drawUpgradeText(ctx, titleLines[titleIndex], slot.x + slot.w * .5, titleY + titleIndex * (titleSize + 3), titleSize, '#ffe5a0', 'center', '900');
+    }
+    var descLines = this.upgradeTextLines(ctx, card.desc || '强化已直接生效', slot.w - 38, descSize, '700').slice(0, compact ? 3 : 4);
+    var descY = slot.y + (compact ? 194 : 280);
+    for (var descIndex = 0; descIndex < descLines.length; descIndex++) {
+      this.drawUpgradeText(ctx, descLines[descIndex], slot.x + slot.w * .5, descY + descIndex * (descSize + 4), descSize, '#f5eee0', 'center', '700');
+    }
+    A.rr(ctx, slot.x + slot.w * .5 - (compact ? 50 : 62), slot.y + slot.h - (compact ? 38 : 48), compact ? 100 : 124, compact ? 25 : 30, 12, 'rgba(53,108,72,.95)', '#9be0a2', 1.5);
+    this.drawUpgradeText(ctx, '强化已生效', slot.x + slot.w * .5, slot.y + slot.h - (compact ? 25 : 33), compact ? 13 : 16, '#d8ffd4', 'center', '900');
+    ctx.restore();
+  };
+
+  Game.prototype.eliteDrawEntry = function (card) {
+    var source = YL.ROGUE_UPGRADES || [];
+    for (var i = 0; i < source.length; i++) {
+      if (source[i] && source[i].id === card.upgradeId) {
+        return { upgrade: source[i], level: this.rogueLevel(card.upgradeId) };
+      }
+    }
+    return null;
+  };
+
+  Game.prototype.eliteDrawRowSlot = function (index, count) {
+    var scale = count <= 1 ? 1.04 : count === 2 ? .92 : count === 3 ? .84 : count === 4 ? .76 : .62;
+    var w = 526 * scale, h = 164 * scale, step = h + 8;
+    var total = h + Math.max(0, count - 1) * step;
+    var top = Math.max(590, 840 - total * .5);
+    return { x: (W - w) * .5, y: top + index * step, w: w, h: h, scale: scale };
+  };
+
+  Game.prototype.eliteDrawSignSlot = function (index, count) {
+    var spacing = count === 1 ? 0 : count === 2 ? 206 : count === 3 ? 158 : count === 4 ? 136 : 112;
+    return { x: W * .5 + (index - (count - 1) * .5) * spacing, y: 620 };
+  };
+
+  Game.prototype.drawEliteResultRow = function (ctx, card, slot, cardIndex) {
+    var entry = this.eliteDrawEntry(card);
+    if (!entry) return;
+    ctx.save();
+    ctx.translate(slot.x, slot.y);
+    ctx.scale(slot.scale, slot.scale);
+    this.drawTalismanRow(ctx, entry, cardIndex, 0, 0, 526, 164);
+    ctx.restore();
+  };
+
+  Game.prototype.drawEliteDraw = function (ctx) {
+    var state = this.eliteDrawState;
+    if (!state) return;
+    var timing = ELITE_DRAW_TIMING;
+    var canContinue = state.t >= timing.revealEnd;
+    ctx.save();
+    ctx.fillStyle = 'rgba(2,7,13,.91)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(99,31,42,.20)'; ctx.fillRect(0, 0, W, 265);
+    A.text(ctx, '精英掉落 · 煞签显现', W / 2, 58, 34, C.gold, 'center', '900');
+    A.text(ctx, state.source && state.source.name ? state.source.name + ' 已伏 · 击杀奖励' : '击杀精英 · 获得强化签', W / 2, 94, 17, '#b9c8c1');
+
+    // 先完整展示大签筒和筒内成束竹签，摇晃阶段持续 3.6 秒。
+    var tubeX = W / 2, tubeY = 316;
+    var tubeAsset = this.assets.eliteDrawTubeShake;
+    var sealAsset = this.assets.eliteDrawSealBurst;
+    var signAsset = this.assets.eliteDrawSignEject;
+    var hasTubeAnimation = tubeAsset && (tubeAsset.width || tubeAsset.naturalWidth);
+    var hasSealAnimation = sealAsset && (sealAsset.width || sealAsset.naturalWidth);
+    var hasSignAnimation = signAsset && (signAsset.width || signAsset.naturalWidth);
+    var introProgress = clamp(state.t / timing.introEnd, 0, 1);
+    var introEase = 1 - Math.pow(1 - introProgress, 3);
+    var tubeScale = .84 + introEase * .16;
+    var tubeAlpha = 1 - clamp((state.t - timing.pauseEnd) / .62, 0, 1);
+    var tubeFrame = state.t < timing.introEnd ? 0 : state.t < timing.shakeEnd
+      ? Math.floor((state.t - timing.introEnd) / .10) % 8 : 7;
+    if (hasSealAnimation && state.t >= timing.shakeEnd && state.t < timing.pauseEnd + .16) {
+      var sealFrame = clamp(Math.floor((state.t - timing.shakeEnd) / .08), 0, 5);
+      var sealFadeIn = clamp((state.t - timing.shakeEnd) / .08, 0, 1);
+      var sealFadeOut = 1 - clamp((state.t - (timing.shakeEnd + .08)) / .20, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = sealFadeIn * sealFadeOut * .88;
+      ctx.globalCompositeOperation = 'lighter';
+      A.atlasCell(ctx, sealAsset, 2, 3, sealFrame, tubeX - 142, tubeY - 142, 284, 284, false);
+      ctx.restore();
+    }
+    if (tubeAlpha > 0) {
+      ctx.save();
+      ctx.globalAlpha = tubeAlpha;
+      if (hasTubeAnimation) {
+        A.atlasCell(ctx, tubeAsset, 2, 4, tubeFrame, tubeX - 160 * tubeScale, tubeY - 210 * tubeScale, 320 * tubeScale, 420 * tubeScale, false);
+      } else {
+        // 资源加载失败时保留一个放大的几何兜底，不影响抽签流程与结果数量。
+        ctx.save();
+        ctx.translate(tubeX, tubeY); ctx.scale(tubeScale, tubeScale);
+        ctx.shadowColor = '#f4bd55'; ctx.shadowBlur = 22;
+        A.rr(ctx, -90, -150, 180, 300, 28, 'rgba(28,24,22,.98)', '#f2bd65', 4);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#f5d27f'; ctx.beginPath(); ctx.ellipse(0, -150, 94, 25, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#8f522d'; ctx.lineWidth = 3; ctx.stroke();
+        for (var fallbackSign = -2; fallbackSign <= 2; fallbackSign++) {
+          ctx.save(); ctx.translate(fallbackSign * 20, -168 - Math.abs(fallbackSign) * 5);
+          ctx.rotate(fallbackSign * .08); ctx.strokeStyle = '#d5ad64'; ctx.lineWidth = 10;
+          ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 76); ctx.stroke(); ctx.restore();
+        }
+        ctx.fillStyle = '#ffd878'; ctx.beginPath(); ctx.ellipse(0, 150, 94, 25, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    var status = state.t < timing.shakeEnd ? '摇签中 · 筒内竹签同步晃动' :
+      state.t < timing.pauseEnd ? '定签 · 签筒暂歇' : state.t < timing.ejectEnd ? '竹签出筒 · 横向排列' : '煞签落定 · 强化已生效';
+    A.text(ctx, status, W / 2, 558, 20, state.t < timing.ejectEnd ? '#f8d98d' : '#bff5d1', 'center', '900');
+    A.text(ctx, '本次摇出 ' + state.count + ' 根竹签 · 对应获得 ' + state.count + ' 道强化', W / 2, 589, 16, '#98aaa3');
+
+    // 出签阶段：复用一根扁平竹片序列帧，按 1～5 根动态横向排开。
+    var signCell = state.count >= 5 ? 152 : state.count === 4 ? 170 : 190;
+    for (var sign = 0; sign < state.count; sign++) {
+      var signSlot = this.eliteDrawSignSlot(sign, state.count);
+      var signProgress = clamp((state.t - timing.pauseEnd - sign * .09) / .48, 0, 1);
+      if (signProgress <= 0) continue;
+      var signEase = 1 - Math.pow(1 - signProgress, 3);
+      var signStartX = tubeX + (sign - (state.count - 1) * .5) * 10;
+      var signStartY = tubeY - 138;
+      var signX = signStartX + (signSlot.x - signStartX) * signEase;
+      var signY = signStartY + (signSlot.y - signStartY) * signEase;
+      var signFrame = clamp(Math.floor(signProgress * 8), 0, 7);
+      var signAlpha = state.t < timing.ejectEnd ? 1 : 1 - clamp((state.t - timing.ejectEnd) / .68, 0, 1);
+      ctx.save();
+      ctx.globalAlpha = signAlpha;
+      if (hasSignAnimation) {
+        A.atlasCell(ctx, signAsset, 2, 4, signFrame, signX - signCell * .5, signY - signCell * .5, signCell, signCell, false);
+      } else {
+        ctx.save(); ctx.translate(signX, signY); ctx.rotate((1 - signProgress) * -.6);
+        A.rr(ctx, -68, -13, 136, 26, 8, '#a9893f', '#f0cf76', 2);
+        this.drawUpgradeText(ctx, '煞', 0, 1, 16, '#3b2a1a', 'center', '900');
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    // 竹片横向停住后，逐根变宽、变亮，接管为强化预览横条。
+    for (var i = 0; i < state.cards.length; i++) {
+      var rowSlot = this.eliteDrawRowSlot(i, state.cards.length);
+      var rowProgress = clamp((state.t - timing.ejectEnd - i * .08) / .62, 0, 1);
+      if (rowProgress <= 0) continue;
+      var rowEase = 1 - Math.pow(1 - rowProgress, 3);
+      ctx.save();
+      ctx.globalAlpha = rowEase;
+      this.drawEliteResultRow(ctx, state.cards[i], rowSlot, i);
+      ctx.restore();
+    }
+
+    A.button(ctx, state.continueRect.x, state.continueRect.y, state.continueRect.w, state.continueRect.h, canContinue ? '继续战斗' : '强化显现中…', canContinue, '#805b2a');
+    A.text(ctx, canContinue ? '点击继续镇守' : '请稍候，竹签正在展开为强化', W / 2, 1252, 16, '#9eb7af');
     ctx.restore();
   };
 
   Game.prototype.wrapText = function (ctx, value, x, y, maxWidth, size, color) {
     var chars = value.split(''), line = '', lines = [];
-    ctx.save(); ctx.font = '700 ' + size + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.save(); ctx.font = '700 ' + size + 'px ' + uiFontFamily(size);
     for (var i = 0; i < chars.length; i++) {
       var test = line + chars[i];
       if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = chars[i]; } else line = test;
@@ -10049,12 +14018,13 @@
 
   Game.prototype.drawPause = function (ctx) {
     ctx.fillStyle = 'rgba(3,8,13,.86)'; ctx.fillRect(0, 0, W, H);
-    A.panel(ctx, 135, 420, 480, 450, .99);
+    A.panel(ctx, 135, 420, 480, 560, .99);
     A.text(ctx, '阵 法 暂 歇', W / 2, 510, 44, C.gold);
     A.text(ctx, '战斗已暂停', W / 2, 578, 24, C.paper);
     A.text(ctx, '场上御灵不能拖动', W / 2, 645, 21, '#a9c0b8');
     A.text(ctx, '魂归会回到整场开局时的初始布阵格', W / 2, 685, 21, '#a9c0b8');
     A.button(ctx, 225, 740, 300, 92, '继续镇魂', true, '#6d6440');
+    A.button(ctx, 225, 850, 300, 72, '退出战斗', false, '#553439');
   };
 
   Game.prototype.drawInfo = function (ctx) {
@@ -10071,9 +14041,9 @@
       if (inspected) {
         var meta = HERO_META[inspected.type] || {};
         this.drawHeroPortrait(ctx, inspected, 132, 880, 38);
-        A.text(ctx, inspected.name + ' · ' + (meta.faction || inspected.faction) + ' / ' + (meta.job || inspected.job), 190, 858, 22, C.gold, 'left');
+        A.text(ctx, inspected.name + ' · ' + (meta.factionName || meta.faction || inspected.faction) + ' / ' + (meta.job || inspected.job), 190, 858, 22, C.gold, 'left');
         A.text(ctx, '生命 ' + Math.ceil(inspected.hp) + ' / ' + inspected.maxHp + '    攻击 ' + Math.round(this.heroAttackPower(inspected)), 190, 892, 18, C.paper, 'left');
-        A.text(ctx, '攻速 ' + (1 / Math.max(.01, inspected.attackInterval)).toFixed(2) + '/秒    阻挡 ' + inspected.block + '    范围 ' + (Math.round((inspected.attackRange || 0) / 150 * 10) / 10) + '格', 190, 924, 17, '#9db1aa', 'left');
+        A.text(ctx, '攻速 ' + (1 / Math.max(.01, inspected.attackInterval)).toFixed(2) + '/秒    范围 ' + (Math.round((inspected.attackRange || 0) / 150 * 10) / 10) + '格', 190, 924, 17, '#9db1aa', 'left');
         A.text(ctx, meta.role || '御灵', 190, 956, 17, HERO_META[inspected.type].color, 'left');
       }
       A.text(ctx, '点击任意处关闭', W / 2, 996, 16, '#80938e');
@@ -10087,7 +14057,7 @@
         this.drawHeroPortrait(ctx, hero, 135, y, 34);
         A.text(ctx, hero.name + ' · ' + hero.role, 190, y - 20, 21, C.paper, 'left');
         A.text(ctx, '伤害 ' + Math.round(hero.damageDone) + '  治疗 ' + Math.round(hero.healingDone), 190, y + 12, 17, '#9cb4ac', 'left');
-        A.text(ctx, '阻挡 ' + hero.blockedTotal + '  魂归 ' + hero.deaths, 190, y + 38, 16, HERO_META[hero.type].color, 'left');
+        A.text(ctx, '魂归 ' + hero.deaths, 190, y + 38, 16, HERO_META[hero.type].color, 'left');
       }
       A.text(ctx, '主角技能释放 ' + Math.round((this.spellDamage.wind || 0) + (this.spellDamage.rain || 0)) + ' 次', W / 2, 900, 20, C.jade);
     } else {
@@ -10098,7 +14068,7 @@
       var entries = [];
       if (enemies.wisp) entries.push(['游魂 ×' + enemies.wisp, '速度快 · 血量低 · 数量多']);
       if (enemies.jiangshi) entries.push(['符尸 ×' + enemies.jiangshi, '近战压进 · 接敌后持续攻击']);
-      if (enemies.armored) entries.push(['甲尸 ×' + enemies.armored, '高血高伤 · 消耗阻挡位']);
+      if (enemies.armored) entries.push(['甲尸 ×' + enemies.armored, '高血高伤 · 加剧阵界压力']);
       if (enemies.swift) entries.push(['疾影 ×' + enemies.swift, '高速突进 · 优先关注边路']);
       if (enemies.boss) entries.push(['纸扎人 Boss ×' + enemies.boss, '召来替身 · 高血量 · 突破阵界压力大']);
       if (!entries.length) entries.push(['未知诡物', '本波暂无配置']);
@@ -10108,7 +14078,7 @@
         A.text(ctx, entries[e][1], 265, ey, 18, '#9db1aa', 'left');
       }
       A.text(ctx, '首领技能：召来替身、持续压迫阵界', W / 2, 825, 20, C.gold);
-      A.text(ctx, '未被阻挡的敌人抵达七星灵灯后会持续破阵', W / 2, 870, 19, '#e99880');
+      A.text(ctx, '敌人抵达七星灵灯后会持续破阵', W / 2, 870, 19, '#e99880');
     }
     A.text(ctx, '点击任意处关闭', W / 2, 945, 17, '#80938e');
   };
@@ -10127,9 +14097,9 @@
       if (inspected) {
         var meta = HERO_META[inspected.type] || {};
         this.drawHeroPortrait(ctx, inspected, 132, 880, 38);
-        A.text(ctx, inspected.name + ' · ' + (meta.faction || inspected.faction) + ' / ' + (meta.job || inspected.job), 190, 858, 22, C.gold, 'left');
+        A.text(ctx, inspected.name + ' · ' + (meta.factionName || meta.faction || inspected.faction) + ' / ' + (meta.job || inspected.job), 190, 858, 22, C.gold, 'left');
         A.text(ctx, '生命 ' + Math.ceil(inspected.hp) + ' / ' + inspected.maxHp + '    攻击 ' + Math.round(this.heroAttackPower(inspected)), 190, 892, 18, C.paper, 'left');
-        A.text(ctx, '攻速 ' + (1 / Math.max(.01, inspected.attackInterval)).toFixed(2) + '/秒    阻挡 ' + inspected.block + '    范围 ' + (Math.round((inspected.attackRange || 0) / 150 * 10) / 10) + '格', 190, 924, 17, '#9db1aa', 'left');
+        A.text(ctx, '攻速 ' + (1 / Math.max(.01, inspected.attackInterval)).toFixed(2) + '/秒    范围 ' + (Math.round((inspected.attackRange || 0) / 150 * 10) / 10) + '格', 190, 924, 17, '#9db1aa', 'left');
         A.text(ctx, meta.role || '御灵', 190, 956, 17, HERO_META[inspected.type].color, 'left');
       }
       A.text(ctx, '点击任意处关闭', W / 2, 996, 16, '#80938e');
@@ -10143,7 +14113,7 @@
         this.drawHeroPortrait(ctx, hero, 135, y, 32);
         A.text(ctx, hero.name + ' · ' + hero.faction + ' / ' + hero.job, 190, y - 20, 20, C.paper, 'left');
         A.text(ctx, '伤害 ' + Math.round(hero.damageDone) + '  治疗 ' + Math.round(hero.healingDone), 190, y + 10, 17, '#9cb4ac', 'left');
-        A.text(ctx, '阻挡 ' + hero.blockedTotal + '  魂归 ' + hero.deaths, 190, y + 36, 16, HERO_META[hero.type].color, 'left');
+        A.text(ctx, '魂归 ' + hero.deaths, 190, y + 36, 16, HERO_META[hero.type].color, 'left');
       }
       A.text(ctx, '主角技能释放 ' + Math.round((this.spellDamage.wind || 0) + (this.spellDamage.rain || 0)) + ' 次', W / 2, 900, 20, C.jade);
     } else {
@@ -10153,7 +14123,7 @@
       A.text(ctx, '幽野村 ' + stage + ' · 本波编成', W / 2, 292, 20, C.paper);
       var entries = [];
       if (enemies.wisp) entries.push(['符纸游魂 ×' + enemies.wisp, '普通怪 · 血量低 · 数量多 · 负责割草反馈']);
-      if (enemies.jiangshi) entries.push(['镇魂甲尸 ×' + enemies.jiangshi, '精英怪 · 血厚 · 压阻挡位 · 会削弱前排']);
+      if (enemies.jiangshi) entries.push(['镇魂甲尸 ×' + enemies.jiangshi, '精英怪 · 血厚 · 加剧阵界压力']);
       if (enemies.boss) entries.push(['纸扎魇主 ×' + enemies.boss, '终局 Boss · 召唤纸偶 · 红线点名 · 破阵压迫']);
       if (!entries.length) entries.push(['暂无怪物', '本波暂未配置']);
       for (var e = 0; e < entries.length; e++) {
@@ -10161,13 +14131,13 @@
         A.text(ctx, entries[e][0], 135, ey, 22, C.paper, 'left');
         A.text(ctx, entries[e][1], 135, ey + 30, 17, '#9db1aa', 'left');
       }
-      A.text(ctx, 'Boss 只在第 20 波出现；前 19 波用于形成局内强化构筑。', W / 2, 830, 19, C.gold);
-      A.text(ctx, '每波清完固定触发一次三选一强化。', W / 2, 872, 19, '#e99880');
+      A.text(ctx, 'Boss 末波压轴出现；小怪清空后先结算最后一次强化。', W / 2, 830, 19, C.gold);
+      A.text(ctx, '每波清完后可选择一项御灵强化。', W / 2, 872, 19, '#e99880');
     }
     A.text(ctx, '点击任意处关闭', W / 2, 945, 17, '#80938e');
   };
 
-  Game.prototype.drawResult = function (ctx) {
+  Game.prototype.drawLegacyResult = function (ctx) {
     if (!cover(ctx, this.assets.title, 0, 0, W, H)) { ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, H); }
     ctx.fillStyle = 'rgba(4,9,14,.80)'; ctx.fillRect(0, 0, W, H);
     A.panel(ctx, 70, 130, 610, 1040, .96);
@@ -10192,6 +14162,208 @@
     A.text(ctx, '本轮获得 · 御灵谱经验 +' + this.rewardXp, W / 2, 965, 22, C.jade);
     A.button(ctx, 150, 1080, 450, 105, this.win ? '再 镇 一 局' : '重 整 魂 位', true, '#a8492b');
     A.text(ctx, '失败仍按到达波次结算', W / 2, 1245, 18, '#89a39b');
+  };
+
+  Game.prototype.drawResultTitlePlaque = function (ctx) {
+    var x = 92, y = 58, w = 566, h = 142;
+    var plaque = this.assets.resultTitlePlaque;
+    if (plaque && (plaque.width || plaque.naturalWidth)) {
+      ctx.drawImage(plaque, x, y, w, h);
+      return;
+    }
+    ctx.save();
+    var wood = ctx.createLinearGradient(x, y, x, y + h);
+    wood.addColorStop(0, '#4b3924'); wood.addColorStop(.48, '#211711'); wood.addColorStop(1, '#100f10');
+    A.rr(ctx, x, y, w, h, 15, wood, '#b78638', 5);
+    A.rr(ctx, x + 10, y + 11, w - 20, h - 22, 10, null, 'rgba(247,213,133,.52)', 2);
+    ctx.strokeStyle = 'rgba(12,6,4,.72)'; ctx.lineWidth = 2;
+    for (var grain = 0; grain < 7; grain++) {
+      var gy = y + 26 + grain * 15;
+      ctx.beginPath(); ctx.moveTo(x + 28, gy); ctx.quadraticCurveTo(W / 2, gy - 7 + (grain % 2) * 11, x + w - 28, gy); ctx.stroke();
+    }
+    ctx.fillStyle = '#c28e37'; ctx.fillRect(x + 22, y + 20, 13, h - 40); ctx.fillRect(x + w - 35, y + 20, 13, h - 40);
+    ctx.fillStyle = 'rgba(92,36,21,.95)';
+    ctx.fillRect(x + 24, y + h - 18, 9, 28); ctx.fillRect(x + w - 33, y + h - 18, 9, 28);
+    ctx.restore();
+  };
+
+  Game.prototype.drawResultRewardStrip = function (ctx, result) {
+    var x = 91, y = 604, w = 568, h = 86;
+    var stripAsset = this.assets.resultRewardStrip;
+    ctx.save();
+    if (stripAsset && (stripAsset.width || stripAsset.naturalWidth)) ctx.drawImage(stripAsset, x, y, w, h);
+    else {
+      var strip = ctx.createLinearGradient(x, y, x, y + h);
+      strip.addColorStop(0, 'rgba(49,42,28,.98)'); strip.addColorStop(1, 'rgba(13,22,25,.98)');
+      A.rr(ctx, x, y, w, h, 8, strip, 'rgba(201,153,68,.80)', 3);
+      A.rr(ctx, x + 7, y + 7, w - 14, h - 14, 5, null, 'rgba(237,205,138,.22)', 1);
+      ctx.strokeStyle = 'rgba(220,170,75,.38)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(W / 2, y + 12); ctx.lineTo(W / 2, y + h - 12); ctx.stroke();
+    }
+    var rewards = result.rewards || [];
+    for (var i = 0; i < rewards.length && i < 2; i++) {
+      var reward = rewards[i], centerX = rewards.length === 1 ? W / 2 : (i === 0 ? 230 : 514);
+      var amount = reward.amount * (result.adMultiplierState === 'claimed' && reward.doubleEligible ? 2 : 1);
+      var iconX = rewards.length === 1 ? centerX - 88 : centerX - 92;
+      var textX = rewards.length === 1 ? centerX + 20 : centerX + 10;
+      this.drawResultRewardIcon(ctx, reward.id, iconX, y + 43, 47);
+      A.text(ctx, reward.name + ' ×' + formatAmount(amount), textX, y + 45, 24, C.paper, 'center', '900');
+    }
+    ctx.restore();
+  };
+
+  Game.prototype.drawResultRewardIcon = function (ctx, rewardId, x, y, size) {
+    var asset = rewardId === 'lingyun' ? this.assets.resultRewardLingyun : rewardId === 'talisman' ? this.assets.resultRewardTalisman : null;
+    if (asset && (asset.width || asset.naturalWidth)) {
+      drawCenteredImage(ctx, asset, x, y, size, size, 0, 1, 'source-over');
+      return;
+    }
+    ctx.save();
+    if (rewardId === 'lingyun') {
+      var aura = ctx.createRadialGradient(x, y, 2, x, y, size * .7);
+      aura.addColorStop(0, 'rgba(209,255,251,.90)'); aura.addColorStop(.36, 'rgba(73,216,177,.74)'); aura.addColorStop(1, 'rgba(36,119,125,0)');
+      ctx.fillStyle = aura; ctx.beginPath(); ctx.arc(x, y, size * .7, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#bafff2'; ctx.lineWidth = 2; ctx.shadowColor = '#38e5e1'; ctx.shadowBlur = 13;
+      ctx.beginPath(); ctx.arc(x, y, size * .31, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = 'rgba(130,252,240,.64)'; ctx.beginPath(); ctx.arc(x, y, size * .22, 0, Math.PI * 2); ctx.fill();
+    } else if (rewardId === 'talisman') {
+      ctx.translate(x, y); ctx.rotate(-.22);
+      A.rr(ctx, -size * .35, -size * .17, size * .7, size * .34, 7, '#e4c46b', '#7b421c', 2);
+      ctx.strokeStyle = '#ad382a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-size * .22, 0); ctx.lineTo(size * .22, 0); ctx.stroke();
+      ctx.strokeStyle = '#8c5728'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(size * .36, size * .08); ctx.quadraticCurveTo(size * .58, size * .18, size * .52, size * .46); ctx.stroke();
+    } else {
+      // 灵种先用 Canvas 灰盒表现：青玉种核、五瓣灵纹和建木根须，正式图标后续可单独替换。
+      ctx.shadowColor = '#83f0d2'; ctx.shadowBlur = 12;
+      var seed = ctx.createRadialGradient(x - size * .14, y - size * .18, 2, x, y, size * .42);
+      seed.addColorStop(0, '#eaffd6'); seed.addColorStop(.35, '#7be0bb'); seed.addColorStop(1, '#217b73');
+      ctx.fillStyle = seed;
+      ctx.beginPath();
+      ctx.moveTo(x, y - size * .43);
+      ctx.bezierCurveTo(x + size * .34, y - size * .24, x + size * .31, y + size * .23, x, y + size * .42);
+      ctx.bezierCurveTo(x - size * .31, y + size * .23, x - size * .34, y - size * .24, x, y - size * .43);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#ddffe6'; ctx.lineWidth = 1.6; ctx.stroke();
+      ctx.strokeStyle = 'rgba(245,255,199,.88)'; ctx.lineWidth = 1.2;
+      for (var petal = 0; petal < 5; petal++) {
+        var angle = -Math.PI * .5 + petal * Math.PI * 2 / 5;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(angle) * size * .22, y + Math.sin(angle) * size * .22); ctx.stroke();
+      }
+      ctx.strokeStyle = '#d0a34c'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x - size * .20, y + size * .36); ctx.quadraticCurveTo(x, y + size * .18, x + size * .20, y + size * .36); ctx.stroke();
+    }
+    ctx.restore();
+  };
+
+  Game.prototype.drawResultReportPanel = function (ctx, result) {
+    var x = 42, y = 716, w = 666, h = 426;
+    var panelAsset = this.assets.resultReportPanel;
+    ctx.save();
+    if (panelAsset && (panelAsset.width || panelAsset.naturalWidth)) ctx.drawImage(panelAsset, x, y, w, h);
+    else {
+      var panel = ctx.createLinearGradient(x, y, x, y + h);
+      panel.addColorStop(0, 'rgba(31,31,27,.98)'); panel.addColorStop(1, 'rgba(8,16,21,.98)');
+      A.rr(ctx, x, y, w, h, 12, panel, '#8d632d', 4);
+      A.rr(ctx, x + 10, y + 10, w - 20, h - 20, 8, null, 'rgba(237,210,142,.30)', 1.5);
+    }
+    ctx.strokeStyle = 'rgba(183,134,57,.34)'; ctx.lineWidth = 1;
+    for (var line = 0; line < 6; line++) {
+      var ly = 821 + line * 47;
+      ctx.beginPath(); ctx.moveTo(x + 28, ly); ctx.lineTo(x + w - 28, ly); ctx.stroke();
+    }
+    A.text(ctx, '本 关 战 报', W / 2, 762, 35, '#deb35b', 'center', '900');
+    ctx.strokeStyle = 'rgba(225,184,88,.55)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(120, 762); ctx.lineTo(232, 762); ctx.moveTo(518, 762); ctx.lineTo(630, 762); ctx.stroke();
+    for (var i = 0; i < result.damageRows.length; i++) this.drawResultDamageRow(ctx, result.damageRows[i], 798 + i * 47);
+    ctx.strokeStyle = 'rgba(220,174,74,.42)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x + 22, 1080); ctx.lineTo(x + w - 22, 1080); ctx.stroke();
+    A.text(ctx, '战斗时长', 114, 1107, 19, C.paper, 'center', '900');
+    A.text(ctx, formatClock(result.durationSeconds), 240, 1107, 29, C.jade, 'center', '900');
+    A.text(ctx, '击败', 380, 1107, 19, C.paper, 'center', '900');
+    A.text(ctx, formatAmount(result.kills), 465, 1107, 29, C.jade, 'center', '900');
+    A.text(ctx, '阵法剩余', 584, 1107, 19, C.paper, 'center', '900');
+    A.text(ctx, Math.round(result.baseHp / Math.max(1, result.baseMax) * 100) + '%', 657, 1107, 29, C.jade, 'center', '900');
+    ctx.restore();
+  };
+
+  Game.prototype.drawResultDamageRow = function (ctx, row, y) {
+    var colors = { protagonist: '#52d8cc', huangjin: '#deb14d', hongyi: '#da6953', xuanya: '#6b9bc6', qingyi: '#ded19b', suwen: '#78d5a7', empty: '#64645f' };
+    var color = colors[row.type] || C.paper;
+    if (row.type === 'protagonist') {
+      var mark = this.assets.resultProtagonistMark;
+      if (mark && (mark.width || mark.naturalWidth)) drawCenteredImage(ctx, mark, 91, y, 46, 46, 0, 1, 'source-over');
+      else {
+        ctx.save(); ctx.beginPath(); ctx.arc(91, y, 23, 0, Math.PI * 2); ctx.fillStyle = '#0b2327'; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.fill(); ctx.stroke();
+        A.text(ctx, '主', 91, y + 1, 22, color, 'center', '900'); ctx.restore();
+      }
+    } else if (row.hero) {
+      this.drawHeroPortrait(ctx, row.hero, 91, y, 21);
+    } else {
+      ctx.save(); ctx.beginPath(); ctx.arc(91, y, 21, 0, Math.PI * 2); ctx.fillStyle = 'rgba(13,16,17,.90)'; ctx.fill(); ctx.strokeStyle = '#5a5952'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+    }
+    A.text(ctx, row.name, 132, y, 23, row.type === 'empty' ? '#9b9481' : C.paper, 'left', '900');
+    A.bar(ctx, 241, y - 8, 220, 16, row.ratio, 1, color, 'rgba(0,0,0,.60)');
+    A.text(ctx, formatAmount(row.damage), 565, y, 22, row.type === 'empty' ? '#a39b8b' : C.paper, 'right', '900');
+    A.text(ctx, Math.round(row.ratio * 100) + '%', 654, y, 22, row.type === 'empty' ? '#77766e' : color, 'right', '900');
+  };
+
+  Game.prototype.drawResultButtons = function (ctx, result) {
+    var adState = result.adMultiplierState;
+    var adEnabled = adState === 'available';
+    this.drawResultButton(ctx, 89, 1181, 270, 91, '看广告双倍', 'resultButtonAd', adEnabled);
+    this.drawResultButton(ctx, 391, 1181, 270, 91, '确 定', 'resultButtonConfirm', true);
+    if (adState === 'claimed') A.text(ctx, '已双倍', 224, 1264, 15, C.jade, 'center', '900');
+    if (this.resultNotice && this.time < this.resultNoticeUntil) A.text(ctx, this.resultNotice, W / 2, 1303, 17, '#b9d7cc');
+  };
+
+  Game.prototype.drawResultButton = function (ctx, x, y, w, h, label, assetKey, active) {
+    ctx.save();
+    var asset = this.assets[assetKey];
+    if (!active) ctx.globalAlpha = .48;
+    if (asset && (asset.width || asset.naturalWidth)) ctx.drawImage(asset, x, y, w, h);
+    else {
+      var isAd = assetKey === 'resultButtonAd';
+      var button = ctx.createLinearGradient(x, y, x, y + h);
+      button.addColorStop(0, isAd ? '#176f70' : '#d09836'); button.addColorStop(1, isAd ? '#142e31' : '#754116');
+      A.rr(ctx, x, y, w, h, 12, button, isAd ? '#66eee0' : '#f1c765', 4);
+      A.rr(ctx, x + 8, y + 8, w - 16, h - 16, 8, null, 'rgba(255,244,192,.34)', 1.5);
+    }
+    if (assetKey === 'resultButtonAd') {
+      var playMark = this.assets.resultPlayMark;
+      if (playMark && (playMark.width || playMark.naturalWidth)) drawCenteredImage(ctx, playMark, x + 41, y + h / 2, 31, 31, 0, 1, 'source-over');
+      else A.text(ctx, '▶', x + 41, y + h / 2 + 1, 23, '#e9f9cb', 'center', '900');
+    }
+    A.text(ctx, label, x + w / 2 + (assetKey === 'resultButtonAd' ? 14 : 0), y + h / 2 + 1, 30, active ? C.white : '#9da8a5', 'center', '900');
+    ctx.restore();
+  };
+
+  Game.prototype.drawResult = function (ctx) {
+    if (!this.battleResult) { this.drawLegacyResult(ctx); return; }
+    // 胜负结算共用同一真实战场、遮罩和面板；只替换标题、中心资源和来自快照的奖励/数据。
+    this.drawBattle(ctx);
+    var shade = ctx.createLinearGradient(0, 0, 0, H);
+    shade.addColorStop(0, 'rgba(2,8,13,.82)'); shade.addColorStop(.45, 'rgba(4,13,18,.73)'); shade.addColorStop(1, 'rgba(2,8,13,.90)');
+    ctx.fillStyle = shade; ctx.fillRect(0, 0, W, H);
+    this.drawResultTitlePlaque(ctx);
+    var isWin = !!this.battleResult.win;
+    A.text(ctx, isWin ? '镇魂成功' : '阵法失守', W / 2, 128, 60, isWin ? '#f0c667' : '#d98d74', 'center', '900');
+    A.text(ctx, '幽野村  ' + this.battleResult.stageId, W / 2, 231, 29, C.paper, 'center', '900');
+    ctx.save();
+    ctx.strokeStyle = 'rgba(218,169,75,.62)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(134, 231); ctx.lineTo(250, 231); ctx.moveTo(500, 231); ctx.lineTo(616, 231); ctx.stroke();
+    ctx.restore();
+    var glow = isWin ? this.assets.resultSealSuccessGlow : this.assets.resultSealFailureGlow;
+    var seal = isWin ? this.assets.resultSealSuccess : this.assets.resultSealFailure;
+    var glowAlpha = isWin ? .8 + Math.sin(this.time * 2.2) * .14 : .34 + Math.sin(this.time * 1.1) * .05;
+    if (glow && (glow.width || glow.naturalWidth)) drawCenteredImage(ctx, glow, W / 2, 426, 390, 390, 0, glowAlpha, 'screen');
+    if (seal && (seal.width || seal.naturalWidth)) drawCenteredImage(ctx, seal, W / 2, 426, 354, 354, 0, 1, 'source-over');
+    else {
+      ctx.save(); ctx.strokeStyle = isWin ? '#c99f52' : '#7d5740'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(W / 2, 426, 122, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = isWin ? 'rgba(63,206,200,.22)' : 'rgba(34,53,58,.18)'; ctx.beginPath(); ctx.arc(W / 2, 426, 112, 0, Math.PI * 2); ctx.fill(); A.text(ctx, isWin ? '镇' : '破', W / 2, 426, 82, isWin ? '#e8c162' : '#aa7d62', 'center', '900'); ctx.restore();
+    }
+    this.drawResultRewardStrip(ctx, this.battleResult);
+    this.drawResultReportPanel(ctx, this.battleResult);
+    this.drawResultButtons(ctx, this.battleResult);
+    if (YL.TutorialUI && YL.TutorialUI.draw) YL.TutorialUI.draw(this, ctx);
   };
 
   YL.Game = Game;

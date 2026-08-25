@@ -3,6 +3,11 @@
   var YL = root.YL = root.YL || {};
   var C = YL.COLORS;
 
+  function uiFontFamily(size) {
+    if (YL.uiFontFamily) return YL.uiFontFamily(size);
+    return Number(size) >= 22 ? (YL.UI_FONT_TITLE_FAMILY || '"MaShanZheng","Microsoft YaHei","PingFang SC",sans-serif') : (YL.UI_FONT_BODY_FAMILY || '"Microsoft YaHei","PingFang SC",sans-serif');
+  }
+
   function pathRoundRect(ctx, x, y, w, h, r) {
     r = Math.min(r, w / 2, h / 2);
     ctx.beginPath();
@@ -22,7 +27,7 @@
 
   function text(ctx, value, x, y, size, color, align, weight) {
     ctx.save();
-    ctx.font = (weight || '700') + ' ' + size + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    ctx.font = (weight || '700') + ' ' + size + 'px ' + uiFontFamily(size);
     ctx.textAlign = align || 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = color || C.white;
@@ -208,6 +213,20 @@
       img, frame * sw + inset, inset, sw - inset * 2, ih - inset * 2,
       centerX - w / 2, baseY - h, w, h
     );
+    ctx.restore();
+    return true;
+  }
+
+  function actionFrame(ctx, img, frame, cols, rows, centerX, baseY, maxW, maxH, alpha, blend) {
+    if (!img || !(img.width || img.naturalWidth)) return false;
+    var iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight;
+    var sw = iw / cols, sh = ih / rows, col = frame % cols, row = Math.floor(frame / cols), inset = 4;
+    var scale = Math.min(maxW / Math.max(1, sw - inset * 2), maxH / Math.max(1, sh - inset * 2));
+    var w = (sw - inset * 2) * scale, h = (sh - inset * 2) * scale;
+    ctx.save();
+    ctx.globalAlpha = alpha == null ? 1 : alpha;
+    ctx.globalCompositeOperation = blend || 'source-over';
+    ctx.drawImage(img, col * sw + inset, row * sh + inset, sw - inset * 2, sh - inset * 2, centerX - w / 2, baseY - h, w, h);
     ctx.restore();
     return true;
   }
@@ -512,7 +531,8 @@
       qingyi: sprites.heroQingyi,
       huangjin: sprites.heroHuangjin,
       xuanya: sprites.heroXuanya,
-      suwen: sprites.heroSuwen
+      suwen: sprites.heroSuwen,
+      nuba: sprites.heroNuba
     };
     var attackMap = {
       hongyi: sprites.heroAttackHongyi,
@@ -526,11 +546,16 @@
       qingyi: C.blue,
       huangjin: C.gold,
       xuanya: '#d9c7a6',
-      suwen: C.jade
+      suwen: C.jade,
+      nuba: '#c7ad7e'
     };
     var sprite = spriteMap[h.type] || sprites.heroHongyi;
     var attackSprite = attackMap[h.type];
+    var castSprite = sprites.heroCastNuba;
     var color = colorMap[h.type] || C.paper;
+    var useNubaCast = h.type === 'nuba' && (h.nubaCastTime || 0) > 0 && rigImageReady(castSprite);
+    var nubaCastProgress = useNubaCast ? clamp01(1 - h.nubaCastTime / Math.max(.01, h.nubaCastDuration || .92)) : 0;
+    var nubaCastFrame = useNubaCast ? Math.min(5, Math.floor(nubaCastProgress * 6)) : 0;
     var attacking = h.attackWindup > 0 || h.attackAnim > 0;
     var progress = 0;
     if (h.attackWindup > 0) {
@@ -677,7 +702,11 @@
     var spriteMaxW = h.type === 'huangjin' ? 168 : 150;
     var spriteMaxH = h.type === 'huangjin' ? 162 : 168;
     var drewSkeleton = false;
-    if (useHuangjinAttackSheet) {
+    if (useNubaCast) {
+      shadow(ctx, 0, 45, 51, .48);
+      actionFrame(ctx, castSprite, nubaCastFrame, 2, 3, 0, 44, 182, 198, .99, 'source-over');
+      drewSkeleton = true;
+    } else if (useHuangjinAttackSheet) {
       shadow(ctx, 0, 45, 49, .46);
       attackFrame(ctx, attackSprite, attackFrameIndex, 0, 44, 154, 166, .99, 'source-over');
       drewSkeleton = true;
@@ -712,7 +741,8 @@
     }
     if (h.flash > 0) {
       if (drewSkeleton) {
-        if (useHuangjinAttackSheet) attackFrame(ctx, attackSprite, attackFrameIndex, 0, 44, 154, 166, Math.min(.42, h.flash * 2.6), 'lighter');
+        if (useNubaCast) actionFrame(ctx, castSprite, nubaCastFrame, 2, 3, 0, 44, 182, 198, Math.min(.42, h.flash * 2.6), 'lighter');
+        else if (useHuangjinAttackSheet) attackFrame(ctx, attackSprite, attackFrameIndex, 0, 44, 154, 166, Math.min(.42, h.flash * 2.6), 'lighter');
         else if (useHongyiAttackSheet) attackFrame(ctx, attackSprite, attackFrameIndex, 0, 44, 166, 196, Math.min(.36, h.flash * 2.2), 'lighter');
         else if (useXuanyaAttackSheet) attackFrame(ctx, attackSprite, attackFrameIndex, 0, 44, 154, 176, Math.min(.34, h.flash * 2.1), 'lighter');
         else if (useQingyiAttackSheet) attackFrame(ctx, attackSprite, attackFrameIndex, 0, 44, 160, 182, Math.min(.28, h.flash * 1.8), 'lighter');

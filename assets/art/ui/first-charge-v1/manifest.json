@@ -1,0 +1,247 @@
+{
+  "source": "assets\\art\\ui\\first-charge-v1\\source\\first-charge-components-sheet-v1.png",
+  "assets": [
+    {
+      "name": "first-charge-panel-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-panel-v1.png",
+      "sourceBox": [
+        4,
+        20,
+        475,
+        970
+      ],
+      "size": [
+        468,
+        949
+      ]
+    },
+    {
+      "name": "first-charge-header-ornament-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-header-ornament-v1.png",
+      "sourceBox": [
+        478,
+        34,
+        925,
+        192
+      ],
+      "size": [
+        437,
+        147
+      ]
+    },
+    {
+      "name": "first-charge-side-ornament-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-side-ornament-v1.png",
+      "sourceBox": [
+        650,
+        205,
+        770,
+        480
+      ],
+      "size": [
+        86,
+        253
+      ]
+    },
+    {
+      "name": "first-charge-tab-active-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-tab-active-v1.png",
+      "sourceBox": [
+        536,
+        500,
+        870,
+        635
+      ],
+      "size": [
+        304,
+        114
+      ]
+    },
+    {
+      "name": "first-charge-tab-inactive-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-tab-inactive-v1.png",
+      "sourceBox": [
+        536,
+        635,
+        870,
+        775
+      ],
+      "size": [
+        314,
+        114
+      ]
+    },
+    {
+      "name": "first-charge-hero-frame-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-hero-frame-v1.png",
+      "sourceBox": [
+        78,
+        975,
+        380,
+        1132
+      ],
+      "size": [
+        213,
+        157
+      ]
+    },
+    {
+      "name": "first-charge-hero-nameplate-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-hero-nameplate-v1.png",
+      "sourceBox": [
+        78,
+        1138,
+        380,
+        1188
+      ],
+      "size": [
+        280,
+        50
+      ]
+    },
+    {
+      "name": "first-charge-button-normal-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-button-normal-v1.png",
+      "sourceBox": [
+        0,
+        1197,
+        592,
+        1305
+      ],
+      "size": [
+        567,
+        108
+      ]
+    },
+    {
+      "name": "first-charge-button-pressed-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-button-pressed-v1.png",
+      "sourceBox": [
+        0,
+        1317,
+        592,
+        1423
+      ],
+      "size": [
+        566,
+        106
+      ]
+    },
+    {
+      "name": "first-charge-button-disabled-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-button-disabled-v1.png",
+      "sourceBox": [
+        0,
+        1435,
+        592,
+        1540
+      ],
+      "size": [
+        566,
+        105
+      ]
+    },
+    {
+      "name": "first-charge-reward-lingyun-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-reward-lingyun-v1.png",
+      "sourceBox": [
+        606,
+        1110,
+        850,
+        1325
+      ],
+      "size": [
+        207,
+        192
+      ]
+    },
+    {
+      "name": "first-charge-reward-talisman-single-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-reward-talisman-single-v1.png",
+      "sourceBox": [
+        638,
+        1368,
+        804,
+        1568
+      ],
+      "size": [
+        145,
+        179
+      ]
+    },
+    {
+      "name": "first-charge-role-avatar-suwen-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-role-avatar-suwen-v1.png",
+      "sourceBox": [
+        0,
+        0,
+        585,
+        450
+      ],
+      "size": [
+        585,
+        450
+      ],
+      "alpha": "RGBA",
+      "sourceNote": "从既有 hero-suwen-v3 透明立绘裁取上半身，作为首充角色道具头像"
+    },
+    {
+      "name": "first-charge-item-frame-green-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-item-frame-green-v1.png",
+      "sourceBox": null,
+      "size": [
+        1358,
+        1022
+      ],
+      "alpha": "RGBA",
+      "sourceNote": "独立生成并清理的透明品质框，非效果图截图裁切"
+    },
+    {
+      "name": "first-charge-item-frame-blue-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-item-frame-blue-v1.png",
+      "sourceBox": null,
+      "size": [
+        1242,
+        964
+      ],
+      "alpha": "RGBA",
+      "sourceNote": "独立生成并清理的透明品质框，非效果图截图裁切"
+    },
+    {
+      "name": "first-charge-item-frame-purple-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-item-frame-purple-v1.png",
+      "sourceBox": null,
+      "size": [
+        1348,
+        754
+      ],
+      "alpha": "RGBA",
+      "sourceNote": "独立生成并清理的透明品质框，非效果图截图裁切"
+    },
+    {
+      "name": "first-charge-item-frame-orange-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-item-frame-orange-v1.png",
+      "sourceBox": null,
+      "size": [
+        1281,
+        978
+      ],
+      "alpha": "RGBA",
+      "sourceNote": "独立生成并清理的透明品质框，非效果图截图裁切"
+    },
+    {
+      "name": "first-charge-bottom-ornament-v1",
+      "path": "assets/art/ui/first-charge-v1/first-charge-bottom-ornament-v1.png",
+      "sourceBox": [
+        0,
+        1632,
+        926,
+        1698
+      ],
+      "size": [
+        885,
+        52
+      ]
+    }
+  ]
+}
