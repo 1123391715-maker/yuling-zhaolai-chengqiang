@@ -10008,7 +10008,7 @@
   Game.prototype.openLocalRewardedVideo = function () {
     var doc = root.document;
     if (!doc || !doc.body || !doc.createElement) return Promise.resolve(false);
-    var source = this.options && this.options.rewardedVideoSrc || '概念图/广告/广告.mp4';
+    var source = this.options && this.options.rewardedVideoSrc || 'assets/video/ad.mp4';
     return new Promise(function (resolve) {
       var completed = false, settled = false;
       var overlay = doc.createElement('div');
