@@ -820,12 +820,16 @@
       var img = self.makeImage();
       if (!img) { self.loaded++; return; }
       img.onload = function () { self.loaded++; if (self.loaded >= self.loadTotal) self.finishAssetLoad(); };
-      img.onerror = function () { self.loaded++; if (self.loaded >= self.loadTotal) self.finishAssetLoad(); };
+      img.onerror = function () {
+        self.loaded++;
+        if (root.console && root.console.warn) root.console.warn('[御灵召来] 资源加载失败: ' + key + ' -> ' + YL.ASSETS[key]);
+        if (self.loaded >= self.loadTotal) self.finishAssetLoad();
+      };
       img.src = YL.ASSETS[key];
       self.assets[key] = img;
     });
     this._loadingStartedAt = Date.now();
-    setTimeout(function () { if (self.state === 'loading') self.finishAssetLoad(); }, 25000);
+    setTimeout(function () { if (self.state === 'loading') self.finishAssetLoad(); }, 60000);
   };
 
   Game.prototype.mapPoint = function (p) {
