@@ -10009,6 +10009,10 @@
     var doc = root.document;
     if (!doc || !doc.body || !doc.createElement) return Promise.resolve(false);
     var source = this.options && this.options.rewardedVideoSrc || 'assets/video/ad.mp4';
+    // 平台子路径部署时相对路径会 404，按页面 base 解析为绝对地址
+    if (!/^(?:data:|blob:|https?:|file:)/i.test(source)) {
+      try { source = new URL(source, (doc.baseURI || doc.location.href)).href; } catch (e) {}
+    }
     return new Promise(function (resolve) {
       var completed = false, settled = false;
       var overlay = doc.createElement('div');
